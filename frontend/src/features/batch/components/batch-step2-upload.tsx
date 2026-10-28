@@ -2,22 +2,37 @@
 
 import { memo, useEffect, useMemo, useState } from 'react';
 
-import { Link } from 'react-router-dom';
-import { X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Upload, X } from 'lucide-react';
 import type { useDropzone } from 'react-dropzone';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { PaginationRail } from '@/components/PaginationRail';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { ImportInboxDialog } from './import-inbox-dialog';
 
 import type { BatchWizardMode } from '@/services/batchPipeline';
 import { isPreviewBatchJobId } from '../lib/batch-preview-fixtures';
 import type { BatchRow, BatchUploadIssue, BatchUploadProgress, Step } from '../types';
 
-const QUEUE_PAGE_SIZE = 100;
+const QUEUE_DEFAULT_PAGE_SIZE = 10;
+const QUEUE_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+type PaginationItem = number | 'ellipsis';
 
 function formatFileSize(bytes: number | undefined): string {
   const value = Number(bytes);
@@ -25,6 +40,42 @@ function formatFileSize(bytes: number | undefined): string {
   if (value < 1024) return `${Math.round(value)} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatFileType(fileType: unknown, filename?: string): string {
+  const raw = String(fileType ?? '').toLowerCase();
+  const name = String(filename ?? '').toLowerCase();
+  if (raw.includes('image') || /\.(jpe?g|png|webp|tiff?|bmp)$/i.test(name)) return 'image';
+  if (raw.includes('pdf') || name.endsWith('.pdf')) return 'pdf';
+  if (raw.includes('docx') || raw.includes('doc') || raw.includes('word') || /\.(docx?|wps)$/i.test(name)) {
+    return 'docx';
+  }
+  if (raw.includes('txt') || raw.includes('text') || name.endsWith('.txt')) return 'txt';
+  return raw || '-';
+}
+
+function getPaginationItems(currentPage: number, totalPages: number): PaginationItem[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pages = new Set<number>([1, totalPages, currentPage, currentPage - 1, currentPage + 1]);
+  if (currentPage <= 2) pages.add(3);
+  if (currentPage >= totalPages - 1) pages.add(totalPages - 2);
+
+  const sortedPages = Array.from(pages)
+    .filter((pageNumber) => pageNumber >= 1 && pageNumber <= totalPages)
+    .sort((a, b) => a - b);
+
+  const items: PaginationItem[] = [];
+  sortedPages.forEach((pageNumber, index) => {
+    const previous = sortedPages[index - 1];
+    if (previous && pageNumber - previous > 1) {
+      items.push(pageNumber - previous === 2 ? previous + 1 : 'ellipsis');
+    }
+    items.push(pageNumber);
+  });
+  return items;
 }
 
 interface BatchStep2UploadProps {
@@ -67,20 +118,28 @@ function BatchStep2UploadInner({
 }: BatchStep2UploadProps) {
   const t = useT();
   const previewJob = activeJobId ? isPreviewBatchJobId(activeJobId) : false;
-  const jobLabel = previewJob ? t('batchWizard.previewJobLabel') : activeJobId;
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
-  // 万级队列不能无界渲染（6720 文件 ≈ 4 万 DOM 节点且每个进度 tick 全量重渲）
-  // —— 复用 PaginationRail 分页展示，上传/删除逻辑不变。
+  // 万级队列不能无界渲染（6720 文件 ≈ 4 万 DOM 节点且每个进度 tick 全量重渲）。
   const [queuePage, setQueuePage] = useState(1);
-  const queueTotalPages = Math.max(1, Math.ceil(rows.length / QUEUE_PAGE_SIZE));
+  const [queuePageSize, setQueuePageSize] = useState(QUEUE_DEFAULT_PAGE_SIZE);
+  const queueTotalPages = Math.max(1, Math.ceil(rows.length / queuePageSize));
+  const queueSafePage = Math.min(Math.max(1, queuePage), queueTotalPages);
+  const queuePaginationItems = useMemo(
+    () => getPaginationItems(queueSafePage, queueTotalPages),
+    [queueSafePage, queueTotalPages],
+  );
   useEffect(() => {
     setQueuePage((prev) => Math.min(Math.max(1, prev), queueTotalPages));
   }, [queueTotalPages]);
   const pagedRows = useMemo(
-    () => rows.slice((queuePage - 1) * QUEUE_PAGE_SIZE, queuePage * QUEUE_PAGE_SIZE),
-    [rows, queuePage],
+    () => rows.slice((queueSafePage - 1) * queuePageSize, queueSafePage * queuePageSize),
+    [rows, queueSafePage, queuePageSize],
   );
+  const handleQueuePageSizeChange = (pageSize: number) => {
+    setQueuePageSize(pageSize);
+    setQueuePage(1);
+  };
 
   const handleRemove = async (fileId: string) => {
     setPendingRemoveId(fileId);
@@ -122,26 +181,6 @@ function BatchStep2UploadInner({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="batch-step2-upload">
       <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto xl:grid-cols-[minmax(0,1.14fr)_minmax(22rem,0.86fr)] xl:overflow-hidden">
         <div className="flex min-h-0 flex-col gap-3">
-          {activeJobId && (
-            <Card className="rounded-[20px] border-border/70 shadow-[var(--shadow-control)]">
-              <CardContent className="p-3">
-                <p className="truncate text-xs text-muted-foreground">
-                  {t('batchWizard.step2.jobLinked')}{' '}
-                  {previewJob ? (
-                    <span className="font-medium text-primary">{jobLabel}</span>
-                  ) : (
-                    <Link
-                      to={`/jobs/${activeJobId}`}
-                      className={cn('font-mono text-primary hover:underline')}
-                    >
-                      {jobLabel}
-                    </Link>
-                  )}
-                </p>
-              </CardContent>
-            </Card>
-          )}
-
           {uploadIssues.length > 0 && (
             <Card
               className="rounded-[20px] border-destructive/30 bg-destructive/5 shadow-[var(--shadow-control)]"
@@ -222,6 +261,13 @@ function BatchStep2UploadInner({
             data-testid="drop-zone"
           >
             <input {...getInputProps({ 'aria-label': t('batchWizard.step2.dropHint') })} />
+            <Upload
+              className={cn(
+                'mb-4 size-8 text-primary transition-transform duration-300',
+                isDragActive && 'scale-110 animate-pulse',
+              )}
+              aria-hidden="true"
+            />
             <p className="text-base font-medium">{t('batchWizard.step2.dropHint')}</p>
             <p className="mt-2 max-w-full truncate text-xs text-muted-foreground" title={dropHint}>
               {dropHint}
@@ -275,6 +321,7 @@ function BatchStep2UploadInner({
               onClick={() => goStep(1)}
               data-testid="step2-prev"
             >
+              <ChevronLeft className="size-4" />
               {t('batchWizard.step2.prevStep')}
             </Button>
             <Button
@@ -285,6 +332,7 @@ function BatchStep2UploadInner({
               data-testid="step2-next"
             >
               {t('batchWizard.step2.nextRecognize')}
+              <ChevronRight className="size-4" />
             </Button>
           </div>
           {loading && (
@@ -295,7 +343,7 @@ function BatchStep2UploadInner({
         </div>
 
         {/* Upload queue */}
-        <Card className="page-surface overflow-hidden rounded-[20px] border-border/70 shadow-[var(--shadow-control)]">
+        <Card className="page-surface flex min-h-0 flex-col overflow-hidden rounded-[20px] border-border/70 shadow-[var(--shadow-control)]">
           <CardHeader className="border-b border-border/70 px-3 py-2 flex flex-row items-center justify-between gap-2 space-y-0">
             <div className="min-w-0">
               <CardTitle className="truncate text-sm">
@@ -323,56 +371,122 @@ function BatchStep2UploadInner({
               )}
             </div>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1 overflow-y-auto divide-y p-0">
-            {rows.length === 0 ? (
-              <p className="p-6 text-center text-sm text-muted-foreground">
-                {t('batchWizard.step2.noFiles')}
-              </p>
-            ) : (
-              pagedRows.map((r) => (
-                <div
-                  key={r.file_id}
-                  className="grid grid-cols-[minmax(0,1fr)_1.75rem] items-center gap-x-2 gap-y-1 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_4.5rem_1.75rem] sm:py-1.5"
-                  data-testid={`step2-row-${r.file_id}`}
-                >
-                  <span className="min-w-0 truncate" title={r.original_filename}>
-                    {r.original_filename}
-                  </span>
-                  <span className="min-w-0 whitespace-nowrap text-xs text-muted-foreground sm:text-right">
-                    {formatFileSize(r.file_size)}
-                  </span>
-                  <span
-                    className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={String(r.file_type)}
-                  >
-                    {r.file_type}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="col-start-2 row-span-3 row-start-1 size-7 shrink-0 text-muted-foreground hover:text-destructive sm:col-auto sm:row-auto"
-                    onClick={() => void handleRemove(r.file_id)}
-                    disabled={pendingRemoveId === r.file_id || clearing || loading}
-                    title={t('batchWizard.step2.removeFile')}
-                    data-testid={`step2-remove-${r.file_id}`}
-                  >
-                    <X className="size-4" />
-                  </Button>
-                </div>
-              ))
-            )}
+          <CardContent className="min-h-0 flex-1 overflow-auto p-0">
+            <Table className="min-w-[32rem]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-14 text-center">序号</TableHead>
+                  <TableHead className="min-w-44 text-left">文件名</TableHead>
+                  <TableHead className="w-24 text-center">文件大小</TableHead>
+                  <TableHead className="w-24 text-center">文件类型</TableHead>
+                  <TableHead className="w-16 text-center">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                      {t('batchWizard.step2.noFiles')}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  pagedRows.map((r, index) => (
+                    <TableRow key={r.file_id} data-testid={`step2-row-${r.file_id}`}>
+                      <TableCell className="text-center text-muted-foreground">
+                        {(queueSafePage - 1) * queuePageSize + index + 1}
+                      </TableCell>
+                      <TableCell className="text-left font-medium text-foreground">
+                        <span className="block max-w-[18rem] truncate" title={r.original_filename}>
+                          {r.original_filename}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-center text-foreground">
+                        {formatFileSize(r.file_size)}
+                      </TableCell>
+                      <TableCell className="text-center text-foreground">
+                        {formatFileType(r.file_type, r.original_filename)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="mx-auto size-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => void handleRemove(r.file_id)}
+                          disabled={pendingRemoveId === r.file_id || clearing || loading}
+                          title={t('batchWizard.step2.removeFile')}
+                          data-testid={`step2-remove-${r.file_id}`}
+                        >
+                          <X className="size-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
           </CardContent>
-          {rows.length > QUEUE_PAGE_SIZE && (
-            <div className="border-t border-border/70 px-3 py-1.5">
-              <PaginationRail
-                page={queuePage}
-                pageSize={QUEUE_PAGE_SIZE}
-                totalItems={rows.length}
-                totalPages={queueTotalPages}
-                onPageChange={setQueuePage}
-                compact
-                testIdPrefix="step2-queue"
-              />
+          {rows.length > 0 && (
+            <div className="flex flex-col gap-3 border-t border-border/70 px-3 py-2 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <span>共 {rows.length} 条</span>
+              <div className="flex items-center justify-end gap-2">
+                <Select
+                  value={String(queuePageSize)}
+                  onValueChange={(value) => handleQueuePageSizeChange(Number(value))}
+                >
+                  <SelectTrigger className="h-8 w-28" data-testid="step2-queue-page-size">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {QUEUE_PAGE_SIZE_OPTIONS.map((size) => (
+                      <SelectItem key={size} value={String(size)}>
+                        {size} 条/页
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-3"
+                  onClick={() => setQueuePage((current) => Math.max(1, current - 1))}
+                  disabled={queueSafePage <= 1}
+                  data-testid="step2-queue-prev"
+                >
+                  上一页
+                </Button>
+                {queuePaginationItems.map((item, index) =>
+                  item === 'ellipsis' ? (
+                    <span
+                      key={`step2-queue-ellipsis-${index}`}
+                      className="flex h-8 min-w-8 items-center justify-center rounded-md border border-border bg-card px-2 text-foreground"
+                    >
+                      ...
+                    </span>
+                  ) : (
+                    <Button
+                      key={item}
+                      variant={item === queueSafePage ? 'default' : 'outline'}
+                      size="sm"
+                      className="h-8 min-w-8 px-2"
+                      onClick={() => setQueuePage(item)}
+                      aria-current={item === queueSafePage ? 'page' : undefined}
+                      data-testid={`step2-queue-page-${item}`}
+                    >
+                      {item}
+                    </Button>
+                  ),
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-3"
+                  onClick={() => setQueuePage((current) => Math.min(queueTotalPages, current + 1))}
+                  disabled={queueSafePage >= queueTotalPages}
+                  data-testid="step2-queue-next"
+                >
+                  下一页
+                </Button>
+              </div>
             </div>
           )}
         </Card>

@@ -36,8 +36,11 @@ export interface ServicesHealth {
 }
 
 const HEALTH_TIMEOUT_MS = 55_000;
-const HEALTH_POLL_INTERVAL_MS = 15_000;
+const HEALTH_POLL_INTERVAL_MS = 60_000;
+const HEALTH_INITIAL_DELAY_MS = 2_500;
+const HEALTH_CACHE_TTL_MS = 45_000;
 const HEALTH_FAILURES_BEFORE_OFFLINE = 3;
+const HEALTH_CACHE_KEY = 'deep-shield:service-health';
 
 const LIVE_SERVICE_STATUSES = new Set([
   'online',
@@ -75,6 +78,7 @@ let snapshot: HealthStoreSnapshot = initialSnapshot;
 const listeners = new Set<HealthListener>();
 let activeFetch: Promise<void> | null = null;
 let started = false;
+let lastFetchedAt = 0;
 let consecutiveFailures = 0;
 
 function emitHealthChange() {
@@ -84,6 +88,48 @@ function emitHealthChange() {
 function updateSnapshot(next: Partial<HealthStoreSnapshot>) {
   snapshot = { ...snapshot, ...next };
   emitHealthChange();
+}
+
+function readCachedHealth(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.sessionStorage.getItem(HEALTH_CACHE_KEY);
+    if (!raw) return false;
+    const cached = JSON.parse(raw) as {
+      savedAt?: unknown;
+      health?: unknown;
+      roundTripMs?: unknown;
+    };
+    if (typeof cached.savedAt !== 'number' || Date.now() - cached.savedAt > HEALTH_CACHE_TTL_MS) {
+      return false;
+    }
+    const health = normalizeHealthPayload(cached.health);
+    lastFetchedAt = cached.savedAt;
+    updateSnapshot({
+      health,
+      checking: false,
+      roundTripMs: typeof cached.roundTripMs === 'number' ? cached.roundTripMs : null,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeCachedHealth(health: ServicesHealth, roundTripMs: number) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(
+      HEALTH_CACHE_KEY,
+      JSON.stringify({ savedAt: lastFetchedAt, health, roundTripMs }),
+    );
+  } catch {
+    // Storage is an optimization only.
+  }
+}
+
+function hasFreshHealth(): boolean {
+  return Boolean(snapshot.health && Date.now() - lastFetchedAt <= HEALTH_CACHE_TTL_MS);
 }
 
 function normalizeService(value: unknown, fallback: ServiceInfo): ServiceInfo {
@@ -186,6 +232,10 @@ export function normalizeHealthPayload(value: unknown): ServicesHealth {
 }
 
 async function runHealthCheck(showChecking: boolean) {
+  if (!showChecking && hasFreshHealth()) {
+    return Promise.resolve();
+  }
+
   if (activeFetch) {
     if (showChecking && !snapshot.checking) updateSnapshot({ checking: true });
     return activeFetch;
@@ -211,10 +261,13 @@ async function runHealthCheck(showChecking: boolean) {
       }
       const data = normalizeHealthPayload(await res.json().catch(() => ({})));
       consecutiveFailures = 0;
+      const roundTripMs = Math.round(performance.now() - start);
+      lastFetchedAt = Date.now();
       updateSnapshot({
         health: data,
-        roundTripMs: Math.round(performance.now() - start),
+        roundTripMs,
       });
+      writeCachedHealth(data, roundTripMs);
     } catch {
       recordHealthFailure();
     } finally {
@@ -238,10 +291,19 @@ function ensureHealthPolling() {
   if (started || typeof window === 'undefined') return;
   started = true;
 
-  void runHealthCheck(false);
+  const hydratedFromCache = readCachedHealth();
+  if (!hydratedFromCache) {
+    updateSnapshot({ checking: true });
+  }
+
+  window.setTimeout(() => {
+    if (document.visibilityState === 'visible') {
+      void runHealthCheck(false);
+    }
+  }, hydratedFromCache ? HEALTH_CACHE_TTL_MS : HEALTH_INITIAL_DELAY_MS);
 
   const tick = () => {
-    if (document.visibilityState === 'visible') {
+    if (document.visibilityState === 'visible' && !hasFreshHealth()) {
       void runHealthCheck(false);
     }
   };
@@ -262,7 +324,6 @@ function subscribe(listener: HealthListener) {
 export function useServiceHealth() {
   useEffect(() => {
     ensureHealthPolling();
-    void runHealthCheck(false);
   }, []);
 
   const state = useSyncExternalStore(

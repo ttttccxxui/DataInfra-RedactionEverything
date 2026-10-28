@@ -30,7 +30,7 @@ export const exportOptions: Array<{ value: StructuredExportFormat; label: string
   { value: 'sql', label: 'SQL' },
 ];
 
-export const FIELD_POLICY_PAGE_SIZE = 5;
+export const FIELD_POLICY_PAGE_SIZE = 10;
 export const DATABASE_DISCOVERY_PAGE_SIZE = 5;
 export const EMPTY_STRUCTURED_COLUMNS: StructuredColumnProfile[] = [];
 

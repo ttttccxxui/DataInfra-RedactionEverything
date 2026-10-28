@@ -11,7 +11,8 @@ import {
 } from 'react';
 import { ArrowRight, Eye, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { t, useI18n, useT } from '@/i18n';
+import { t, useT } from '@/i18n';
+import { formatDateTime } from '@/lib/format-date';
 import { cn } from '@/lib/utils';
 import { EmptyState } from '@/components/EmptyState';
 import { AsyncListShell } from '@/components/shared/AsyncListShell';
@@ -81,8 +82,7 @@ function getProgressMeter(job: JobSummary): {
 function formatUpdatedAt(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return t('jobs.updatedAtUnknown');
-  const locale = useI18n.getState().locale;
-  return date.toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN');
+  return formatDateTime(value);
 }
 
 type JobsTableProps = {
@@ -100,7 +100,7 @@ type JobsTableProps = {
 
 const jobsGridStyle: CSSProperties = {
   gridTemplateColumns:
-    'minmax(210px,1.16fr) minmax(44px,0.24fr) minmax(54px,0.28fr) minmax(54px,0.28fr) minmax(50px,0.26fr) minmax(155px,0.82fr) minmax(96px,0.48fr) minmax(124px,0.58fr) minmax(72px,0.36fr) minmax(72px,0.36fr) minmax(60px,0.3fr)',
+    'minmax(190px,1.08fr) minmax(44px,0.22fr) minmax(54px,0.26fr) minmax(54px,0.26fr) minmax(50px,0.24fr) minmax(130px,0.68fr) minmax(88px,0.42fr) minmax(86px,0.4fr) minmax(118px,0.56fr) minmax(68px,0.32fr) minmax(68px,0.32fr) minmax(58px,0.28fr)',
   columnGap: '10px',
 };
 
@@ -222,6 +222,7 @@ export function JobsTable({
         <span className="jobs-count-head">{t('jobs.abnormalHeader')}</span>
         <span className="jobs-progress-cell">{t('jobs.progress')}</span>
         <span className="jobs-status-cell">{t('jobs.currentStatus')}</span>
+        <span className="jobs-updated-by-cell">更新人</span>
         <span className="jobs-updated-cell">{t('jobs.updatedAt')}</span>
         <span className="jobs-action-column-head">{t('jobNav.continueReview')}</span>
         <span className="jobs-action-column-head">{t('jobs.viewDetail')}</span>
@@ -553,6 +554,10 @@ const JobRow = memo(function JobRow({
               {t('jobs.currentStatus')}
             </span>
             <JobStatusBadge status={job.status} />
+          </div>
+
+          <div className="jobs-updated-by-cell hidden md:block truncate text-caption text-muted-foreground">
+            {job.updated_by || job.created_by || '-'}
           </div>
 
           <div className="jobs-updated-cell hidden md:block text-caption text-muted-foreground tabular-nums whitespace-nowrap">

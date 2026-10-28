@@ -1,10 +1,12 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
+import { ChevronLeft } from 'lucide-react';
 
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 import { useBatchWizard } from './hooks/use-batch-wizard';
 import { BatchWizardProvider } from './batch-wizard-context';
@@ -33,29 +35,40 @@ export function BatchWizard() {
   return (
     <BatchWizardProvider value={w}>
       <div
-        className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
+        className="flex min-h-full min-w-0 flex-col bg-background"
         data-testid="batch-wizard"
       >
         <div
           className={cn(
-            'flex min-h-0 min-w-0 flex-1 flex-col',
+            'batch-wizard-shell flex min-w-0 flex-1 flex-col',
             w.step === 1
-              ? 'page-shell-narrow !max-w-[108rem] !pt-2 2xl:!max-w-[118rem] 2xl:!pt-3 overflow-hidden'
+              ? 'page-shell-narrow !max-w-[108rem] !pt-2 2xl:!max-w-[118rem] 2xl:!pt-3'
               : w.step === 4
-                ? 'page-shell !pt-2 2xl:!pt-3 overflow-hidden'
-                : 'page-shell-narrow !max-w-[112rem] !pt-2 2xl:!max-w-[122rem] 2xl:!pt-3 overflow-hidden',
+                ? 'page-shell !pt-2 2xl:!pt-3'
+                : 'page-shell-narrow !max-w-[112rem] !pt-2 2xl:!max-w-[122rem] 2xl:!pt-3',
           )}
         >
+          <header className="flex flex-none flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1
+                className="truncate text-2xl font-semibold tracking-tight text-foreground"
+                title={w.activeJobTitle || undefined}
+              >
+                {w.activeJobTitle || (w.previewMode ? '预览任务' : '文档图片处理任务')}
+              </h1>
+            </div>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/batch">
+                <ChevronLeft className="size-4" />
+                {t('jobDetail.backToList')}
+              </Link>
+            </Button>
+          </header>
+
           {w.previewMode && (
             <Alert className="mb-3" data-testid="batch-preview-alert">
               <AlertDescription>{t('batchWizard.previewBanner')}</AlertDescription>
             </Alert>
-          )}
-
-          {w.step !== 4 && (
-            <p className="mb-0.5 shrink-0 text-[11px] leading-tight text-muted-foreground">
-              {t('batchWizard.stepsOverview')}
-            </p>
           )}
 
           <BatchStepProgress currentStep={w.step} canGoStep={w.canGoStep} goStep={w.goStep} />

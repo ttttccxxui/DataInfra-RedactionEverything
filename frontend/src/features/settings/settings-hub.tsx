@@ -14,8 +14,6 @@ import { PipelineConfigPanel } from './components/pipeline-config';
 
 export function SettingsHub() {
   const t = useT();
-  const panelIntroClass =
-    'surface-subtle flex min-h-10 items-center px-4 py-2.5 text-xs leading-5 text-muted-foreground';
   const {
     entityTypes: _entityTypes,
     textTaxonomy,
@@ -139,15 +137,15 @@ export function SettingsHub() {
           )}
 
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-            <TabsList
-              className="rounded-xl border border-border/70 bg-muted/40 p-1"
-              data-testid="settings-tabs"
-            >
-              <TabsTrigger value="text" className="whitespace-nowrap" data-testid="tab-text">
+            <TabsList className="h-10 rounded-xl border-0 bg-card p-1 shadow-[var(--shadow-control)]" data-testid="settings-tabs">
+              <TabsTrigger value="text" className="h-8 whitespace-nowrap px-4" data-testid="tab-text">
                 {t('settings.textRules')}
               </TabsTrigger>
-              <TabsTrigger value="vision" className="whitespace-nowrap" data-testid="tab-vision">
-                {t('settings.visionRules')}
+              <TabsTrigger value="ocr" className="h-8 whitespace-nowrap px-4" data-testid="tab-ocr">
+                图像文字识别项设置
+              </TabsTrigger>
+              <TabsTrigger value="visual" className="h-8 whitespace-nowrap px-4" data-testid="tab-visual">
+                视觉特征设置
               </TabsTrigger>
             </TabsList>
             <div className="control-cluster">
@@ -185,9 +183,6 @@ export function SettingsHub() {
             value="text"
             className="mt-0 flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
           >
-            <div className={panelIntroClass} data-testid="settings-text-intro">
-              {t('settings.textPipelineIntro')}
-            </div>
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <EntityTypeList
                 types={textRuleTypes}
@@ -215,15 +210,42 @@ export function SettingsHub() {
           </TabsContent>
 
           <TabsContent
-            value="vision"
+            value="ocr"
             className="mt-0 flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
           >
-            <div className={panelIntroClass} data-testid="settings-vision-intro">
-              {t('settings.pipelineDisplayName.ocr')} / {t('settings.pipelineDisplayName.image')}
-            </div>
             <PipelineConfigPanel
               loading={pipelinesLoading}
               pipelines={pipelines}
+              fixedMode="ocr_has"
+              onCreateType={createPipelineType}
+              onUpdateType={updatePipelineType}
+              onDeleteType={(mode, id) =>
+                setConfirmState({
+                  title: t('common.delete'),
+                  message: t('settings.confirmDeleteType'),
+                  danger: true,
+                  onConfirm: () => deletePipelineType(mode, id),
+                })
+              }
+              onReset={() =>
+                setConfirmState({
+                  title: t('settings.resetVisionRules'),
+                  message: t('settings.confirmResetPipelines'),
+                  danger: true,
+                  onConfirm: () => resetPipelines(),
+                })
+              }
+            />
+          </TabsContent>
+
+          <TabsContent
+            value="visual"
+            className="mt-0 flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+          >
+            <PipelineConfigPanel
+              loading={pipelinesLoading}
+              pipelines={pipelines}
+              fixedMode="visual_features"
               onCreateType={createPipelineType}
               onUpdateType={updatePipelineType}
               onDeleteType={(mode, id) =>

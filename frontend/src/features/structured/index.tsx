@@ -1,6 +1,7 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
 export { Structured, StructuredOverview } from './pages/overview';
+export { StructuredTasks, StructuredTaskWizard } from './structured-tasks';
 export { StructuredFiles } from './pages/files';
 export { StructuredDatabase } from './pages/database';
 export { StructuredDatasets } from './pages/datasets';

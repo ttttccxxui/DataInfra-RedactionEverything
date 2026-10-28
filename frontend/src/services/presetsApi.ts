@@ -19,7 +19,9 @@ export interface RecognitionPreset {
   linkageGroups?: string[];
   replacementMode: ReplacementMode;
   created_at: string;
+  created_by?: string | null;
   updated_at: string;
+  updated_by?: string | null;
   readonly?: boolean;
 }
 

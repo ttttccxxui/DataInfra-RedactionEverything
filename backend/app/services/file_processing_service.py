@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,14 @@ def _store_and_lock():
     """Deferred import to avoid circular dependency at module load time."""
     from app.services.file_management_service import _file_store_lock, file_store
     return file_store, _file_store_lock
+
+
+def _metadata_update(owner_id: str | None) -> dict[str, str]:
+    actor = str(owner_id or "local_user")
+    return {
+        "updated_at": datetime.now(UTC).isoformat(),
+        "updated_by": actor,
+    }
 
 
 def _assign_pages_to_entities(entities: list, pages: list[str] | None) -> None:
@@ -105,6 +114,7 @@ async def parse_file(file_id: str) -> dict[str, Any]:
                 "pages": result.pages,
                 "page_count": result.page_count,
                 "is_scanned": result.is_scanned,
+                **_metadata_update(str(snapshot.get("owner_id") or "local_user")),
             })
 
     result.file_id = file_id
@@ -194,6 +204,7 @@ async def run_hybrid_ner(
                         getattr(entity_type, "id", None) for entity_type in entity_types
                     ],
                 },
+                **_metadata_update(owner_id),
             })
 
     return {
@@ -262,6 +273,7 @@ async def run_default_ner(
                         getattr(entity_type, "id", None) for entity_type in entity_types
                     ],
                 },
+                **_metadata_update(owner_id),
             })
 
     return {

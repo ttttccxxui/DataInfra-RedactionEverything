@@ -16,8 +16,9 @@ import math
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from io import BytesIO
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,6 +60,11 @@ VLLM_MAX_TOKENS = 512
 # (union-of-N recall at ~1x cost) instead of the backend issuing N serial passes.
 # When >1, set the backend's LOCATE_ANYTHING_CONSENSUS_SAMPLES back to 1.
 LM_SAMPLES = max(1, int(os.environ.get("LOCATE_ANYTHING_VLLM_SAMPLES", "1")))
+# Per image-side CUDA OOM policy: attempt 0 is immediate; later attempts sleep
+# these seconds first. Exhausted attempts then drop to a smaller side (ladder).
+# Goal: wait/retry under transient VRAM pressure instead of HTTP 503.
+CUDA_CAPACITY_BACKOFF_SECONDS: tuple[float, ...] = (0.5, 1.0, 2.0)
+CUDA_CAPACITY_MAX_ATTEMPTS = 1 + len(CUDA_CAPACITY_BACKOFF_SECONDS)
 
 
 # Network timeout (seconds) for a single vLLM completion request.
@@ -142,6 +148,18 @@ def _is_cuda_capacity_error(exc: BaseException) -> bool:
     )
 
 
+def _cuda_capacity_backoff_seconds(attempt_index: int) -> float:
+    """Seconds to sleep BEFORE a 0-based CUDA-capacity attempt.
+
+    Attempt 0 is immediate (0s). Attempts 1..N use CUDA_CAPACITY_BACKOFF_SECONDS.
+    Out-of-range indices clamp to the last backoff so callers can loop safely.
+    """
+    if attempt_index <= 0:
+        return 0.0
+    idx = min(attempt_index - 1, len(CUDA_CAPACITY_BACKOFF_SECONDS) - 1)
+    return float(CUDA_CAPACITY_BACKOFF_SECONDS[idx])
+
+
 def _adaptive_image_sides(requested: int) -> list[int]:
     floor = max(ADAPTIVE_SIDE_FLOOR, min(DEFAULT_MIN_SIDE, requested))
     candidates = [requested, *ADAPTIVE_SIDE_LADDER]
@@ -187,7 +205,12 @@ class LocateService:
         # Actual device the loaded weights ended up on ("cuda" / "cpu" / "" while
         # loading); /health reports this instead of a hardcoded green light.
         self.device = ""
-        self.lock = asyncio.Lock()
+        # Single in-process admission gate: encode + vLLM/HF generation for one
+        # request must not overlap another request's encode. Previously only the
+        # MoonViT encode sat under a lock while vLLM ran outside — a second
+        # request could encode while the first still held VRAM and trip CUDA OOM
+        # → HTTP 503. Semaphore(1) queues waiters instead.
+        self.admission = asyncio.Semaphore(1)
         # vLLM-backend (prompt-embeds) state; populated by load_vision().
         self.model: Any = None
         self.processor: Any = None
@@ -197,6 +220,19 @@ class LocateService:
         # None = not yet verified, True = verified byte-identical to the full
         # processor output, False = differs or failed -> never used.
         self._fast_tokenize_ok: bool | None = None
+
+    @asynccontextmanager
+    async def _admission_slot(self) -> AsyncIterator[int]:
+        """Queue for the single GPU admission slot; yields admission_wait_ms."""
+        wait_start = time.perf_counter()
+        await self.admission.acquire()
+        wait_ms = max(0, round((time.perf_counter() - wait_start) * 1000))
+        if wait_ms > 0:
+            print(f"[LocateAnything] admission_wait_ms={wait_ms}", flush=True)
+        try:
+            yield wait_ms
+        finally:
+            self.admission.release()
 
     def configure(self, model_path: str, backend: str, dtype: str) -> None:
         self.model_path = model_path
@@ -467,40 +503,62 @@ class LocateService:
     ) -> tuple[str, list[dict[str, Any]], tuple[int, int]]:
         if not self.ready:
             raise HTTPException(status_code=503, detail="LocateAnything model is not ready")
-        inference_image = _resize_for_inference(
-            image, max_image_side, upscale_target=min(DEFAULT_MIN_SIDE, max_image_side)
-        )
-        # GPU work (vision encode + embed stitch) stays inside the lock; the
-        # vLLM network round-trip (up to VLLM_REQUEST_TIMEOUT_SECONDS) runs
-        # outside it so a slow generation cannot starve other GPU requests --
-        # same structure as predict_boxes_per_category.
-        async with self.lock:
-            try:
-                vit, num_image_tokens = await asyncio.to_thread(self._encode_vit, inference_image)
-                b64 = await asyncio.to_thread(
-                    self._build_prompt_embeds_b64, inference_image, prompt, vit, num_image_tokens
+        # Hold admission across encode + vLLM so a second request cannot encode
+        # while this one still occupies GPU/LM capacity (was the overload-503 path).
+        async with self._admission_slot():
+            last_capacity_error: BaseException | None = None
+            for attempt_side in _adaptive_image_sides(max_image_side):
+                inference_image = _resize_for_inference(
+                    image, attempt_side, upscale_target=min(DEFAULT_MIN_SIDE, attempt_side)
                 )
-            except RuntimeError as exc:
-                if _is_cuda_capacity_error(exc):
-                    raise HTTPException(
-                        status_code=503,
-                        detail=f"LocateAnything CUDA capacity exhausted during vision encode: {exc}",
-                    ) from exc
-                raise
-            finally:
-                # Same hygiene as worker-mode predict (trim after every pass, not
-                # only on failure): per-image activation buffers otherwise stay in
-                # the allocator cache and grow the process across requests until
-                # the shared 16GB card thrashes (observed: tower at ~12GB, encodes
-                # stalling at 100% GPU with the whole stack resident).
-                trim_cuda_cache("vllm-chat-encode")
-        answers = await asyncio.to_thread(self._vllm_complete_b64, b64, temperature, LM_SAMPLES)
-        boxes: list[dict[str, Any]] = []
-        for _ans, _toks in answers:
-            parsed = _parse_boxes(_ans, inference_image.width, inference_image.height)
-            boxes.extend(_attach_box_confidence(parsed, _toks))
-        boxes = fold_sample_boxes(boxes)
-        return answers[0][0], boxes, (inference_image.width, inference_image.height)
+                for attempt in range(CUDA_CAPACITY_MAX_ATTEMPTS):
+                    delay = _cuda_capacity_backoff_seconds(attempt)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    b64: str | None = None
+                    try:
+                        vit, num_image_tokens = await asyncio.to_thread(
+                            self._encode_vit, inference_image
+                        )
+                        b64 = await asyncio.to_thread(
+                            self._build_prompt_embeds_b64,
+                            inference_image,
+                            prompt,
+                            vit,
+                            num_image_tokens,
+                        )
+                    except RuntimeError as exc:
+                        trim_cuda_cache(f"vllm-chat-encode-failed-{attempt_side}-{attempt}")
+                        if not _is_cuda_capacity_error(exc):
+                            raise
+                        last_capacity_error = exc
+                        print(
+                            "[LocateAnything] cuda_retry "
+                            f"path=vllm-chat side={attempt_side} attempt={attempt} "
+                            f"backoff_s={delay} error={str(exc)[:160]!r}",
+                            flush=True,
+                        )
+                        continue
+                    finally:
+                        if b64 is not None:
+                            trim_cuda_cache("vllm-chat-encode")
+                    assert b64 is not None
+                    answers = await asyncio.to_thread(
+                        self._vllm_complete_b64, b64, temperature, LM_SAMPLES
+                    )
+                    boxes: list[dict[str, Any]] = []
+                    for _ans, _toks in answers:
+                        parsed = _parse_boxes(_ans, inference_image.width, inference_image.height)
+                        boxes.extend(_attach_box_confidence(parsed, _toks))
+                    boxes = fold_sample_boxes(boxes)
+                    return answers[0][0], boxes, (inference_image.width, inference_image.height)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "LocateAnything CUDA capacity exhausted after adaptive retries: "
+                    f"{last_capacity_error}"
+                ),
+            )
 
     async def predict_boxes_per_category(
         self, image: Image.Image, categories: list[str], max_image_side: int = DEFAULT_MAX_SIDE
@@ -513,58 +571,88 @@ class LocateService:
         MoonViT vision pass runs ONCE; the cheap vLLM generations are then issued
         concurrently (the LM server batches them), keeping latency ~ one encode
         plus a few batched generations rather than N full passes.
+
+        Whole detect (encode + all category gens) stays under admission so another
+        request cannot start a competing encode on the same card.
         """
         if not self.ready:
             raise HTTPException(status_code=503, detail="LocateAnything model is not ready")
-        inference_image = _resize_for_inference(
-            image, max_image_side, upscale_target=min(DEFAULT_MIN_SIDE, max_image_side)
-        )
-        width, height = inference_image.width, inference_image.height
-        _t0 = time.perf_counter()
-        # Phase 1 (GPU, serialized): one vision encode + per-category prompt-embeds.
-        async with self.lock:
-            try:
-                vit, num_image_tokens = await asyncio.to_thread(self._encode_vit, inference_image)
-                _t_enc = time.perf_counter()
-                payloads: list[tuple[str, str]] = []
-                for cat in categories:
-                    b64 = await asyncio.to_thread(
-                        self._build_prompt_embeds_b64, inference_image, _detect_prompt([cat]), vit, num_image_tokens
+        async with self._admission_slot():
+            last_capacity_error: BaseException | None = None
+            for attempt_side in _adaptive_image_sides(max_image_side):
+                inference_image = _resize_for_inference(
+                    image, attempt_side, upscale_target=min(DEFAULT_MIN_SIDE, attempt_side)
+                )
+                width, height = inference_image.width, inference_image.height
+                for attempt in range(CUDA_CAPACITY_MAX_ATTEMPTS):
+                    delay = _cuda_capacity_backoff_seconds(attempt)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    _t0 = time.perf_counter()
+                    payloads: list[tuple[str, str]] | None = None
+                    _t_enc = _t0
+                    _t_build = _t0
+                    try:
+                        vit, num_image_tokens = await asyncio.to_thread(
+                            self._encode_vit, inference_image
+                        )
+                        _t_enc = time.perf_counter()
+                        payloads = []
+                        for cat in categories:
+                            b64 = await asyncio.to_thread(
+                                self._build_prompt_embeds_b64,
+                                inference_image,
+                                _detect_prompt([cat]),
+                                vit,
+                                num_image_tokens,
+                            )
+                            payloads.append((cat, b64))
+                        _t_build = time.perf_counter()
+                    except RuntimeError as exc:
+                        trim_cuda_cache(f"vllm-detect-encode-failed-{attempt_side}-{attempt}")
+                        if not _is_cuda_capacity_error(exc):
+                            raise
+                        last_capacity_error = exc
+                        print(
+                            "[LocateAnything] cuda_retry "
+                            f"path=vllm-detect side={attempt_side} attempt={attempt} "
+                            f"backoff_s={delay} error={str(exc)[:160]!r}",
+                            flush=True,
+                        )
+                        continue
+                    finally:
+                        if payloads is not None:
+                            trim_cuda_cache("vllm-detect-encode")
+                    assert payloads is not None
+
+                    async def _gen(cat: str, b64: str) -> tuple[str, list[dict[str, Any]], str]:
+                        answers = await asyncio.to_thread(
+                            self._vllm_complete_b64, b64, DEFAULT_TEMPERATURE, LM_SAMPLES
+                        )
+                        boxes: list[dict[str, Any]] = []
+                        for _ans, _toks in answers:
+                            parsed = _parse_boxes(_ans, width, height)
+                            boxes.extend(_attach_box_confidence(parsed, _toks))
+                        return cat, fold_sample_boxes(boxes), answers[0][0]
+
+                    results = await asyncio.gather(*[_gen(cat, b64) for cat, b64 in payloads])
+                    print(
+                        f"[LA-timing] cats={len(categories)} size={width}x{height} "
+                        f"encode={_t_enc - _t0:.2f}s build={_t_build - _t_enc:.2f}s "
+                        f"generate={time.perf_counter() - _t_build:.2f}s "
+                        f"total={time.perf_counter() - _t0:.2f}s",
+                        flush=True,
                     )
-                    payloads.append((cat, b64))
-                _t_build = time.perf_counter()
-            except RuntimeError as exc:
-                if _is_cuda_capacity_error(exc):
-                    raise HTTPException(
-                        status_code=503,
-                        detail=f"LocateAnything CUDA capacity exhausted during vision encode: {exc}",
-                    ) from exc
-                raise
-            finally:
-                # Mirror worker-mode predict: trim the allocator cache after every
-                # encode pass so per-image activations cannot accumulate (see
-                # _predict_boxes_vllm for the observed thrash this prevents).
-                trim_cuda_cache("vllm-detect-encode")
-
-        # Phase 2 (network, concurrent): vLLM generations batch on the LM server.
-        async def _gen(cat: str, b64: str) -> tuple[str, list[dict[str, Any]], str]:
-            answers = await asyncio.to_thread(self._vllm_complete_b64, b64, DEFAULT_TEMPERATURE, LM_SAMPLES)
-            boxes: list[dict[str, Any]] = []
-            for _ans, _toks in answers:
-                parsed = _parse_boxes(_ans, width, height)
-                boxes.extend(_attach_box_confidence(parsed, _toks))
-            return cat, fold_sample_boxes(boxes), answers[0][0]
-
-        results = await asyncio.gather(*[_gen(cat, b64) for cat, b64 in payloads])
-        print(
-            f"[LA-timing] cats={len(categories)} size={width}x{height} "
-            f"encode={_t_enc - _t0:.2f}s build={_t_build - _t_enc:.2f}s "
-            f"generate={time.perf_counter() - _t_build:.2f}s total={time.perf_counter() - _t0:.2f}s",
-            flush=True,
-        )
-        per_category = [(cat, boxes) for cat, boxes, _ in results]
-        raw = "\n".join(f"[{cat}] {answer}" for cat, _, answer in results)
-        return per_category, (width, height), raw
+                    per_category = [(cat, boxes) for cat, boxes, _ in results]
+                    raw = "\n".join(f"[{cat}] {answer}" for cat, _, answer in results)
+                    return per_category, (width, height), raw
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "LocateAnything CUDA capacity exhausted after adaptive retries: "
+                    f"{last_capacity_error}"
+                ),
+            )
 
     async def predict_boxes(
         self,
@@ -589,76 +677,91 @@ class LocateService:
             requested_mode,
             FAST_FIRST_ENABLED if fast_first is None else bool(fast_first),
         )
-        for attempt_side in _adaptive_image_sides(max_image_side):
-            inference_image = _resize_for_inference(
-                image, attempt_side, upscale_target=min(DEFAULT_MIN_SIDE, attempt_side)
-            )
-            scale_x = inference_image.width / source_size[0] if source_size[0] else 1.0
-            scale_y = inference_image.height / source_size[1] if source_size[1] else 1.0
-            last_answer = ""
-            last_mapped: list[dict[str, Any]] = []
-            retry_smaller_side = False
-            for mode in mode_sequence:
-                async with self.lock:
-                    start = time.perf_counter()
-                    try:
-                        answer = await asyncio.to_thread(
-                            self.worker.predict,
-                            inference_image,
-                            prompt,
-                            mode,
-                            max_new_tokens,
-                            temperature,
-                        )
-                    except RuntimeError as exc:
-                        trim_cuda_cache(f"predict-failed-{attempt_side}-{mode}")
-                        if not _is_cuda_capacity_error(exc):
-                            raise
-                        last_capacity_error = exc
-                        retry_smaller_side = True
+        async with self._admission_slot():
+            for attempt_side in _adaptive_image_sides(max_image_side):
+                inference_image = _resize_for_inference(
+                    image, attempt_side, upscale_target=min(DEFAULT_MIN_SIDE, attempt_side)
+                )
+                scale_x = inference_image.width / source_size[0] if source_size[0] else 1.0
+                scale_y = inference_image.height / source_size[1] if source_size[1] else 1.0
+                last_answer = ""
+                last_mapped: list[dict[str, Any]] = []
+                side_capacity_failed = False
+                for attempt in range(CUDA_CAPACITY_MAX_ATTEMPTS):
+                    delay = _cuda_capacity_backoff_seconds(attempt)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    retry_smaller_side = False
+                    for mode in mode_sequence:
+                        start = time.perf_counter()
+                        try:
+                            answer = await asyncio.to_thread(
+                                self.worker.predict,
+                                inference_image,
+                                prompt,
+                                mode,
+                                max_new_tokens,
+                                temperature,
+                            )
+                        except RuntimeError as exc:
+                            trim_cuda_cache(f"predict-failed-{attempt_side}-{mode}-{attempt}")
+                            if not _is_cuda_capacity_error(exc):
+                                raise
+                            last_capacity_error = exc
+                            retry_smaller_side = True
+                            side_capacity_failed = True
+                            print(
+                                "[LocateAnything] cuda_retry "
+                                f"path=hf prompt={prompt[:72]!r} mode={mode} "
+                                f"side={attempt_side} attempt={attempt} backoff_s={delay} "
+                                f"size={inference_image.width}x{inference_image.height} "
+                                f"error={str(exc)[:160]!r}",
+                                flush=True,
+                            )
+                            break
+                        finally:
+                            trim_cuda_cache("predict")
+                        elapsed = time.perf_counter() - start
                         print(
-                            "[LocateAnything] capacity retry "
-                            f"prompt={prompt[:72]!r} mode={mode} side={attempt_side} "
-                            f"size={inference_image.width}x{inference_image.height} error={str(exc)[:160]!r}",
+                            f"[LocateAnything] prompt={prompt[:72]!r} mode={mode} "
+                            f"boxes_inference_size={inference_image.width}x{inference_image.height} "
+                            f"max_side={attempt_side} elapsed={elapsed:.2f}s",
                             flush=True,
                         )
-                        break
-                    finally:
-                        trim_cuda_cache("predict")
-                    elapsed = time.perf_counter() - start
-                    print(
-                        f"[LocateAnything] prompt={prompt[:72]!r} mode={mode} "
-                        f"boxes_inference_size={inference_image.width}x{inference_image.height} "
-                        f"max_side={attempt_side} elapsed={elapsed:.2f}s",
-                        flush=True,
-                    )
-                boxes = _parse_boxes(answer, inference_image.width, inference_image.height)
-                mapped: list[dict[str, Any]] = []
-                for box in boxes:
-                    mapped.append(
-                        {
-                            **box,
-                            "x": round(float(box["x"]) / scale_x, 2),
-                            "y": round(float(box["y"]) / scale_y, 2),
-                            "width": round(float(box["width"]) / scale_x, 2),
-                            "height": round(float(box["height"]) / scale_y, 2),
-                        }
-                    )
-                last_answer = answer
-                last_mapped = mapped
-                if mode == requested_mode or mapped or not fallback_when_no_boxes:
-                    return answer, mapped, source_size
-                print(
-                    f"[LocateAnything] fast-first empty, fallback to {requested_mode} prompt={prompt[:72]!r}",
-                    flush=True,
-                )
-            if retry_smaller_side:
-                continue
-            return last_answer, last_mapped, source_size
-        else:
+                        boxes = _parse_boxes(answer, inference_image.width, inference_image.height)
+                        mapped: list[dict[str, Any]] = []
+                        for box in boxes:
+                            mapped.append(
+                                {
+                                    **box,
+                                    "x": round(float(box["x"]) / scale_x, 2),
+                                    "y": round(float(box["y"]) / scale_y, 2),
+                                    "width": round(float(box["width"]) / scale_x, 2),
+                                    "height": round(float(box["height"]) / scale_y, 2),
+                                }
+                            )
+                        last_answer = answer
+                        last_mapped = mapped
+                        if mode == requested_mode or mapped or not fallback_when_no_boxes:
+                            return answer, mapped, source_size
+                        print(
+                            f"[LocateAnything] fast-first empty, fallback to {requested_mode} "
+                            f"prompt={prompt[:72]!r}",
+                            flush=True,
+                        )
+                    if retry_smaller_side:
+                        # Same side: more cuda_retry attempts with backoff; after
+                        # attempts exhausted, fall through to a smaller side.
+                        continue
+                    return last_answer, last_mapped, source_size
+                if side_capacity_failed:
+                    continue
             raise HTTPException(
                 status_code=503,
-                detail=f"LocateAnything CUDA capacity exhausted after adaptive retries: {last_capacity_error}",
+                detail=(
+                    "LocateAnything CUDA capacity exhausted after adaptive retries: "
+                    f"{last_capacity_error}"
+                ),
             )
 
 

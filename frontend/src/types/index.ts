@@ -189,6 +189,9 @@ export interface FileListItem {
   file_size: number;
   file_type: FileType;
   created_at?: string | null;
+  created_by?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
   has_output: boolean;
   entity_count: number;
 

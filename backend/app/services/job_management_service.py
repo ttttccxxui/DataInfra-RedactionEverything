@@ -213,7 +213,9 @@ def job_to_summary(row: dict[str, Any], store: JobStore) -> dict[str, Any]:
         "config": cfg,
         "error_message": row.get("error_message"),
         "created_at": row["created_at"],
+        "created_by": row.get("created_by") or row.get("owner_id"),
         "updated_at": row["updated_at"],
+        "updated_by": row.get("updated_by") or row.get("owner_id"),
         "progress": progress_from_items(items),
         "nav_hints": nav_hints,
     }
@@ -304,6 +306,19 @@ def _review_draft_from_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _review_draft_from_recognition(file_id: str, updated_at: str | None = None) -> dict[str, Any]:
+    info, _ = _safe_file_info(file_id)
+    boxes = _iter_bounding_boxes(info)
+    if not boxes:
+        return _empty_review_draft_response()
+    return {
+        "exists": True,
+        "entities": info.get("entities") or [],
+        "bounding_boxes": [to_jsonable(box) for box in boxes],
+        "updated_at": updated_at or info.get("updated_at"),
+    }
+
+
 def _read_review_draft_fast(store: JobStore, job_id: str, item_id: str) -> dict[str, Any]:
     db_path = getattr(store, "_path", None)
     if not isinstance(db_path, str) or not db_path:
@@ -319,6 +334,7 @@ def _read_review_draft_fast(store: JobStore, job_id: str, item_id: str) -> dict[
         row = conn.execute(
             """
             SELECT
+                i.file_id,
                 i.review_draft_json,
                 i.review_draft_updated_at
             FROM job_items AS i
@@ -329,7 +345,10 @@ def _read_review_draft_fast(store: JobStore, job_id: str, item_id: str) -> dict[
             (job_id, item_id),
         ).fetchone()
         if row:
-            return _review_draft_from_row(dict(row))
+            response = _review_draft_from_row(dict(row))
+            if response.get("exists"):
+                return response
+            return _review_draft_from_recognition(str(row["file_id"]), row["review_draft_updated_at"])
 
         job_exists = conn.execute("SELECT 1 FROM jobs WHERE id = ? LIMIT 1", (job_id,)).fetchone()
         if not job_exists:
@@ -343,7 +362,7 @@ def review_draft_response(store: JobStore, item_id: str) -> dict[str, Any]:
         raise NotFoundError("item not found")
     draft = store.get_item_review_draft(item_id)
     if draft is None:
-        return _empty_review_draft_response()
+        return _review_draft_from_recognition(str(item["file_id"]))
     return {
         "exists": True,
         "entities": draft.get("entities") or [],
@@ -390,6 +409,8 @@ def create_job(store: JobStore, job_type_str: str, title: str, config: Any,
         skip_item_review=skip_item_review,
         priority=priority,
         owner_id=owner_id,
+        created_by=owner_id,
+        updated_by=owner_id,
     )
     row = store.get_job(jid)
     if not row:
@@ -788,7 +809,12 @@ def iter_entity_rows(
             }
 
 
-def update_draft(store: JobStore, job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+def update_draft(
+    store: JobStore,
+    job_id: str,
+    patch: dict[str, Any],
+    updated_by: str | None = None,
+) -> dict[str, Any]:
     """Update a draft job. Raises ValueError on errors."""
     row = store.get_job(job_id)
     if not row:
@@ -797,16 +823,22 @@ def update_draft(store: JobStore, job_id: str, patch: dict[str, Any]) -> dict[st
         raise ConflictError("job config is locked")
     if not patch:
         return job_to_summary(row, store)
-    if not store.update_job_draft(job_id, patch):
+    if not store.update_job_draft(job_id, patch, updated_by=updated_by):
         raise ValueError("nothing to update")
-    store.touch_job_updated(job_id)
+    store.touch_job_updated(job_id, updated_by=updated_by)
     row2 = store.get_job(job_id)
     if not row2:
         raise RuntimeError("internal invariant: row2 is unexpectedly missing")
     return job_to_summary(row2, store)
 
 
-def add_item(store: JobStore, job_id: str, file_id: str, sort_order: int | None) -> dict[str, Any]:
+def add_item(
+    store: JobStore,
+    job_id: str,
+    file_id: str,
+    sort_order: int | None,
+    updated_by: str | None = None,
+) -> dict[str, Any]:
     """Add an item to a draft job. Raises ValueError on errors."""
     from app.services.file_management_service import file_store
 
@@ -822,7 +854,7 @@ def add_item(store: JobStore, job_id: str, file_id: str, sort_order: int | None)
         if not get_structured_store().get_dataset(file_id, owner_id=owner_id):
             raise NotFoundError("dataset not found")
         iid = store.add_item(job_id, file_id, sort_order=sort_order)
-        store.touch_job_updated(job_id)
+        store.touch_job_updated(job_id, updated_by=updated_by or owner_id)
         ir = store.get_item(iid)
         if not ir:
             raise RuntimeError("internal invariant: ir is unexpectedly missing")
@@ -833,14 +865,14 @@ def add_item(store: JobStore, job_id: str, file_id: str, sort_order: int | None)
         file_id=file_id,
     )
     iid = store.add_item(job_id, file_id, sort_order=sort_order)
-    store.touch_job_updated(job_id)
+    store.touch_job_updated(job_id, updated_by=updated_by or str(row.get("owner_id") or "local_user"))
     ir = store.get_item(iid)
     if not ir:
         raise RuntimeError("internal invariant: ir is unexpectedly missing")
     return item_to_out(ir)
 
 
-def submit_job(store: JobStore, job_id: str) -> dict[str, Any]:
+def submit_job(store: JobStore, job_id: str, updated_by: str | None = None) -> dict[str, Any]:
     """Submit a job for processing. Raises ValueError on errors."""
     from app.services.file_management_service import file_store
 
@@ -872,7 +904,7 @@ def submit_job(store: JobStore, job_id: str) -> dict[str, Any]:
             )
     try:
         lock_job_config(store, job_id, row)
-        store.submit_job(job_id)
+        store.submit_job(job_id, updated_by=updated_by)
     except ValueError:
         raise
     # 将所有 PENDING item 入队
@@ -905,19 +937,19 @@ def submit_job(store: JobStore, job_id: str) -> dict[str, Any]:
     return job_to_summary(row2, store)
 
 
-def cancel_job(store: JobStore, job_id: str) -> dict[str, Any]:
+def cancel_job(store: JobStore, job_id: str, updated_by: str | None = None) -> dict[str, Any]:
     """Cancel a job. Raises ValueError if not found."""
     row = store.get_job(job_id)
     if not row:
         raise NotFoundError("job not found")
-    store.cancel_job(job_id)
+    store.cancel_job(job_id, updated_by=updated_by)
     row2 = store.get_job(job_id)
     if not row2:
         raise RuntimeError("internal invariant: row2 is unexpectedly missing")
     return job_to_summary(row2, store)
 
 
-def requeue_failed(store: JobStore, job_id: str) -> dict[str, Any]:
+def requeue_failed(store: JobStore, job_id: str, updated_by: str | None = None) -> dict[str, Any]:
     """Re-queue all failed items. Raises ValueError on errors."""
     row = store.get_job(job_id)
     if not row:
@@ -941,6 +973,7 @@ def requeue_failed(store: JobStore, job_id: str) -> dict[str, Any]:
         job_status = row["status"]
         if job_status in (JobStatus.FAILED.value, JobStatus.COMPLETED.value):
             store.update_job_status(job_id, JobStatus.QUEUED)
+            store.touch_job_updated(job_id, updated_by=updated_by)
         elif job_status == JobStatus.CANCELLED.value:
             pass
     except InvalidStatusTransition:

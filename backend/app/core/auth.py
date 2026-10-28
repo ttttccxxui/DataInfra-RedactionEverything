@@ -110,6 +110,17 @@ def _load_auth() -> dict:
         return _load_auth_unlocked()
 
 
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _actor_value(actor: str | None, *, default: str = _LEGACY_SUBJECT) -> str:
+    try:
+        return normalize_username(actor, default=default)
+    except HTTPException:
+        return default
+
+
 def _save_auth_unlocked(data: dict) -> None:
     global _auth_doc_cache, _auth_version_cache_mtime, _auth_version_cache_path
     _atomic_write_json(_AUTH_FILE, data)
@@ -302,7 +313,15 @@ def _users(auth: dict) -> dict[str, dict]:
 _ROLE_REVIEWER = "reviewer"
 _ROLE_OPERATOR = "operator"
 _ROLE_VIEWER = "viewer"
-_KNOWN_ROLES = {_ROLE_SUPER_ADMIN, _ROLE_USER, _ROLE_REVIEWER, _ROLE_OPERATOR, _ROLE_VIEWER}
+_ROLE_AUDITOR = "auditor"
+_KNOWN_ROLES = {
+    _ROLE_SUPER_ADMIN,
+    _ROLE_USER,
+    _ROLE_REVIEWER,
+    _ROLE_OPERATOR,
+    _ROLE_VIEWER,
+    _ROLE_AUDITOR,
+}
 
 
 def normalize_role(role: str | None) -> str:
@@ -313,7 +332,7 @@ def normalize_role(role: str | None) -> str:
         return value
     raise HTTPException(
         status_code=400,
-        detail="Role must be one of: super_admin, reviewer, user, operator, viewer.",
+        detail="Role must be one of: super_admin, reviewer, user, operator, viewer, auditor.",
     )
 
 
@@ -335,7 +354,7 @@ def user_can_bulk_confirm(username: str | None) -> bool:
     return _can_bulk_confirm(get_user(username))
 
 
-def set_user_bulk_confirm(username: str, allowed: bool) -> dict:
+def set_user_bulk_confirm(username: str, allowed: bool, actor: str | None = None) -> dict:
     """Grant or revoke the batch one-click-confirm permission for a user."""
     subject = normalize_username(username)
     try:
@@ -348,7 +367,8 @@ def set_user_bulk_confirm(username: str, allowed: bool) -> dict:
             permissions = dict(_user_permissions(current))
             permissions[_PERMISSION_BULK_CONFIRM] = bool(allowed)
             current["permissions"] = permissions
-            current["updated_at"] = datetime.now(UTC).isoformat()
+            current["updated_at"] = _now_iso()
+            current["updated_by"] = _actor_value(actor)
             users[subject] = current
             auth["users"] = users
             _save_auth_unlocked(auth)
@@ -448,18 +468,24 @@ def set_password(
     *,
     username: str | None = None,
     invalidate_existing_tokens: bool = False,
+    actor: str | None = None,
 ) -> int:
     try:
         with _auth_file_lock:
             auth = _load_auth_unlocked()
             subject = normalize_username(username, default=_LEGACY_SUBJECT)
             users = _users(auth)
+            now = _now_iso()
+            previous = dict(users.get(subject) or {})
+            actor_subject = _actor_value(actor or subject, default=subject)
             users[subject] = {
-                **dict(users.get(subject) or {}),
+                **previous,
                 "password_hash": hash_password(password),
-                "created_at": (users.get(subject) or {}).get("created_at") or datetime.now(UTC).isoformat(),
-                "updated_at": datetime.now(UTC).isoformat(),
-                "role": (users.get(subject) or {}).get("role") or _ROLE_SUPER_ADMIN,
+                "created_at": previous.get("created_at") or now,
+                "created_by": previous.get("created_by") or actor_subject,
+                "updated_at": now,
+                "updated_by": actor_subject,
+                "role": previous.get("role") or _ROLE_SUPER_ADMIN,
             }
             auth["users"] = users
             if subject == _LEGACY_SUBJECT:
@@ -477,7 +503,7 @@ def set_password(
         raise _auth_state_unavailable() from exc
 
 
-def create_user(username: str, password: str, *, role: str = _ROLE_USER) -> str:
+def create_user(username: str, password: str, *, role: str = _ROLE_USER, actor: str | None = None) -> str:
     subject = normalize_username(username)
     normalized_role = normalize_role(role)
     try:
@@ -494,10 +520,14 @@ def create_user(username: str, password: str, *, role: str = _ROLE_USER) -> str:
                     status_code=409,
                     detail=f"License seat limit reached ({seat_limit} users). Renew or upgrade the license.",
                 )
+            now = _now_iso()
+            actor_subject = _actor_value(actor or subject, default=subject)
             users[subject] = {
                 "password_hash": hash_password(password),
-                "created_at": datetime.now(UTC).isoformat(),
-                "updated_at": datetime.now(UTC).isoformat(),
+                "created_at": now,
+                "created_by": actor_subject,
+                "updated_at": now,
+                "updated_by": actor_subject,
                 "role": normalized_role,
             }
             auth["users"] = users
@@ -523,13 +553,15 @@ def provision_ldap_user(username: str, role: str) -> str:
             auth = _load_auth_unlocked()
             users = _users(auth)
             existing = users.get(subject)
-            now = datetime.now(UTC).isoformat()
+            now = _now_iso()
             if existing is None:
                 users[subject] = {
                     "auth_source": "ldap",
                     "role": normalized_role,
                     "created_at": now,
+                    "created_by": "ldap",
                     "updated_at": now,
+                    "updated_by": "ldap",
                 }
             else:
                 if not isinstance(existing, dict) or existing.get("auth_source") != "ldap":
@@ -538,6 +570,7 @@ def provision_ldap_user(username: str, role: str) -> str:
                 if settings.LDAP_ROLE_SYNC:
                     record["role"] = normalized_role
                 record["updated_at"] = now
+                record["updated_by"] = "ldap"
                 users[subject] = record
             auth["users"] = users
             _save_auth_unlocked(auth)
@@ -573,11 +606,48 @@ def set_user_disabled(actor: str, username: str, disabled: bool) -> dict:
                     )
             record = dict(record)
             record["disabled"] = bool(disabled)
-            record["updated_at"] = datetime.now(UTC).isoformat()
+            now = _now_iso()
+            record["updated_at"] = now
+            record["updated_by"] = actor_subject
             users[subject] = record
             auth["users"] = users
             _save_auth_unlocked(auth)
-            return {"username": subject, "disabled": bool(disabled)}
+            return {"username": subject, "disabled": bool(disabled), **record}
+    except AuthStateError as exc:
+        raise _auth_state_unavailable() from exc
+
+
+def set_user_role(actor: str, username: str, role: str) -> dict:
+    """管理员修改用户角色，并记录更新人/更新时间。"""
+    subject = normalize_username(username)
+    actor_subject = normalize_username(actor)
+    normalized_role = normalize_role(role)
+    try:
+        with _auth_file_lock:
+            auth = _load_auth_unlocked()
+            users = _users(auth)
+            record = users.get(subject)
+            if not isinstance(record, dict):
+                raise HTTPException(status_code=404, detail="User not found.")
+            if record.get("role") == _ROLE_SUPER_ADMIN and normalized_role != _ROLE_SUPER_ADMIN:
+                active_admins = [
+                    name
+                    for name, user in users.items()
+                    if isinstance(user, dict)
+                    and user.get("role") == _ROLE_SUPER_ADMIN
+                    and not user.get("disabled")
+                ]
+                if len(active_admins) <= 1:
+                    raise HTTPException(status_code=400, detail="不能移除最后一个可用超级管理员角色。")
+            now = _now_iso()
+            record = dict(record)
+            record["role"] = normalized_role
+            record["updated_at"] = now
+            record["updated_by"] = actor_subject
+            users[subject] = record
+            auth["users"] = users
+            _save_auth_unlocked(auth)
+            return {"username": subject, **record}
     except AuthStateError as exc:
         raise _auth_state_unavailable() from exc
 
@@ -612,7 +682,9 @@ def list_users() -> list[dict]:
             "username": username,
             "role": (user or {}).get("role") or _ROLE_USER,
             "created_at": (user or {}).get("created_at"),
+            "created_by": (user or {}).get("created_by"),
             "updated_at": (user or {}).get("updated_at"),
+            "updated_by": (user or {}).get("updated_by"),
             "can_bulk_confirm": _can_bulk_confirm(user),
             "disabled": bool((user or {}).get("disabled")),
         }
@@ -751,6 +823,18 @@ async def require_super_admin(
     role = (user or {}).get("role")
     if role != _ROLE_SUPER_ADMIN:
         raise HTTPException(status_code=403, detail="Super administrator privileges are required.")
+    return str(subject)
+
+
+async def require_audit_access(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str:
+    subject = await require_auth(request, credentials)
+    user = get_user(subject)
+    role = (user or {}).get("role")
+    if role not in (_ROLE_SUPER_ADMIN, _ROLE_AUDITOR):
+        raise HTTPException(status_code=403, detail="需要系统管理员或安全审计员权限。")
     return str(subject)
 
 

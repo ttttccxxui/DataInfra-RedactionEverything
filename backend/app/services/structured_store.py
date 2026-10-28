@@ -17,6 +17,10 @@ def _utc_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _actor(owner_id: str | None) -> str:
+    return str(owner_id or "local_user")
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False)
 
@@ -43,7 +47,9 @@ CREATE TABLE IF NOT EXISTS structured_sources (
   status TEXT NOT NULL DEFAULT 'ready',
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_by TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_structured_sources_owner ON structured_sources(owner_id);
 
@@ -57,7 +63,9 @@ CREATE TABLE IF NOT EXISTS structured_connections (
   last_tested_at TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_by TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_structured_connections_owner ON structured_connections(owner_id);
 
@@ -77,7 +85,9 @@ CREATE TABLE IF NOT EXISTS structured_datasets (
   schema_json TEXT NOT NULL DEFAULT '[]',
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_by TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_structured_datasets_owner ON structured_datasets(owner_id);
 CREATE INDEX IF NOT EXISTS idx_structured_datasets_source ON structured_datasets(source_id);
@@ -87,7 +97,8 @@ CREATE TABLE IF NOT EXISTS structured_profiles (
   dataset_id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
   profile_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_structured_profiles_owner ON structured_profiles(owner_id);
 
@@ -95,7 +106,8 @@ CREATE TABLE IF NOT EXISTS structured_policies (
   dataset_id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
   policy_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_structured_policies_owner ON structured_policies(owner_id);
 
@@ -126,8 +138,35 @@ class StructuredStore:
         ensure_db_dir(self.db_path)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            def _columns(table: str) -> set[str]:
+                return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+            for table in ("structured_sources", "structured_connections", "structured_datasets"):
+                cols = _columns(table)
+                if "created_by" not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN created_by TEXT")
+                if "updated_by" not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN updated_by TEXT")
+                conn.execute(
+                    f"UPDATE {table} SET created_by = COALESCE(NULLIF(created_by, ''), owner_id, 'local_user') "
+                    "WHERE created_by IS NULL OR created_by = ''"
+                )
+                conn.execute(
+                    f"UPDATE {table} SET updated_by = COALESCE(NULLIF(updated_by, ''), owner_id, 'local_user') "
+                    "WHERE updated_by IS NULL OR updated_by = ''"
+                )
+
+            for table in ("structured_profiles", "structured_policies"):
+                cols = _columns(table)
+                if "updated_by" not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN updated_by TEXT")
+                conn.execute(
+                    f"UPDATE {table} SET updated_by = COALESCE(NULLIF(updated_by, ''), owner_id, 'local_user') "
+                    "WHERE updated_by IS NULL OR updated_by = ''"
+                )
+
             # 启动迁移（F1-1）：数据集软删标记。老库无此列则补。
-            cols = {row[1] for row in conn.execute("PRAGMA table_info(structured_datasets)")}
+            cols = _columns("structured_datasets")
             if "deleted_at" not in cols:
                 conn.execute("ALTER TABLE structured_datasets ADD COLUMN deleted_at TEXT")
             conn.commit()
@@ -145,12 +184,14 @@ class StructuredStore:
     ) -> dict[str, Any]:
         source_id = str(uuid.uuid4())
         now = _utc_iso()
+        actor = _actor(owner_id)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO structured_sources
-                (id, owner_id, source_type, kind, name, file_path, status, metadata_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, owner_id, source_type, kind, name, file_path, status, metadata_json,
+                 created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_id,
@@ -162,7 +203,9 @@ class StructuredStore:
                     status,
                     _json_dumps(metadata or {}),
                     now,
+                    actor,
                     now,
+                    actor,
                 ),
             )
             conn.commit()
@@ -201,13 +244,14 @@ class StructuredStore:
     ) -> dict[str, Any]:
         connection_id = str(uuid.uuid4())
         now = _utc_iso()
+        actor = _actor(owner_id)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO structured_connections
                 (id, owner_id, engine, display_name, credential_json, last_test_status, last_tested_at,
-                 metadata_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 metadata_json, created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     connection_id,
@@ -219,7 +263,9 @@ class StructuredStore:
                     now if last_test_status else None,
                     _json_dumps(metadata or {}),
                     now,
+                    actor,
                     now,
+                    actor,
                 ),
             )
             conn.commit()
@@ -230,7 +276,7 @@ class StructuredStore:
             rows = conn.execute(
                 """
                 SELECT id, owner_id, engine, display_name, last_test_status, last_tested_at,
-                       metadata_json, created_at, updated_at
+                       metadata_json, created_at, created_by, updated_at, updated_by
                 FROM structured_connections
                 WHERE owner_id = ?
                 ORDER BY created_at DESC
@@ -248,7 +294,7 @@ class StructuredStore:
     ) -> dict[str, Any] | None:
         cols = "*" if include_secret else (
             "id, owner_id, engine, display_name, last_test_status, last_tested_at, "
-            "metadata_json, created_at, updated_at"
+            "metadata_json, created_at, created_by, updated_at, updated_by"
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -297,10 +343,11 @@ class StructuredStore:
         from datetime import UTC, datetime
 
         with self._connect() as conn:
+            now = datetime.now(UTC).isoformat()
             cur = conn.execute(
-                "UPDATE structured_datasets SET deleted_at = ? "
+                "UPDATE structured_datasets SET deleted_at = ?, updated_at = ?, updated_by = ? "
                 "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-                (datetime.now(UTC).isoformat(), dataset_id, owner_id),
+                (now, now, _actor(owner_id), dataset_id, owner_id),
             )
             conn.commit()
             return cur.rowcount > 0
@@ -308,9 +355,9 @@ class StructuredStore:
     def restore_dataset(self, dataset_id: str, *, owner_id: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE structured_datasets SET deleted_at = NULL "
+                "UPDATE structured_datasets SET deleted_at = NULL, updated_at = ?, updated_by = ? "
                 "WHERE id = ? AND owner_id = ? AND deleted_at IS NOT NULL",
-                (dataset_id, owner_id),
+                (_utc_iso(), _actor(owner_id), dataset_id, owner_id),
             )
             conn.commit()
             return cur.rowcount > 0
@@ -393,14 +440,15 @@ class StructuredStore:
     ) -> dict[str, Any]:
         now = _utc_iso()
         did = dataset_id or str(uuid.uuid4())
+        actor = _actor(owner_id)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO structured_datasets
                 (id, owner_id, source_id, connection_id, name, dataset_type, source_kind, shape_kind,
                  schema_name, table_name, row_count_estimate, column_count, schema_json, metadata_json,
-                 created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_at, created_by, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   name = excluded.name,
                   shape_kind = excluded.shape_kind,
@@ -408,7 +456,8 @@ class StructuredStore:
                   column_count = excluded.column_count,
                   schema_json = excluded.schema_json,
                   metadata_json = excluded.metadata_json,
-                  updated_at = excluded.updated_at
+                  updated_at = excluded.updated_at,
+                  updated_by = excluded.updated_by
                 """,
                 (
                     did,
@@ -426,7 +475,9 @@ class StructuredStore:
                     _json_dumps(schema or []),
                     _json_dumps(metadata or {}),
                     now,
+                    actor,
                     now,
+                    actor,
                 ),
             )
             conn.commit()
@@ -442,7 +493,9 @@ class StructuredStore:
                 SELECT
                   d.*,
                   p.updated_at AS profile_updated_at,
+                  p.updated_by AS profile_updated_by,
                   pol.updated_at AS policy_updated_at,
+                  pol.updated_by AS policy_updated_by,
                   pol.policy_json AS policy_status_json
                 FROM structured_datasets d
                 LEFT JOIN structured_profiles p
@@ -476,7 +529,9 @@ class StructuredStore:
                 SELECT
                   d.*,
                   p.updated_at AS profile_updated_at,
+                  p.updated_by AS profile_updated_by,
                   pol.updated_at AS policy_updated_at,
+                  pol.updated_by AS policy_updated_by,
                   pol.policy_json AS policy_status_json
                 FROM structured_datasets d
                 LEFT JOIN structured_profiles p
@@ -502,19 +557,26 @@ class StructuredStore:
 
     def save_profile(self, dataset_id: str, *, owner_id: str, profile: dict[str, Any]) -> dict[str, Any]:
         now = _utc_iso()
+        actor = _actor(owner_id)
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO structured_profiles (dataset_id, owner_id, profile_json, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO structured_profiles (dataset_id, owner_id, profile_json, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(dataset_id) DO UPDATE SET
                   profile_json = excluded.profile_json,
-                  updated_at = excluded.updated_at
+                  updated_at = excluded.updated_at,
+                  updated_by = excluded.updated_by
                 """,
-                (dataset_id, owner_id, _json_dumps(profile), now),
+                (dataset_id, owner_id, _json_dumps(profile), now, actor),
+            )
+            conn.execute(
+                "UPDATE structured_datasets SET updated_at = ?, updated_by = ? WHERE id = ? AND owner_id = ?",
+                (now, actor, dataset_id, owner_id),
             )
             conn.commit()
         profile["updated_at"] = now
+        profile["updated_by"] = actor
         return profile
 
     def get_profile(self, dataset_id: str, *, owner_id: str) -> dict[str, Any] | None:
@@ -528,24 +590,32 @@ class StructuredStore:
         data = _json_loads(row["profile_json"], {})
         if isinstance(data, dict):
             data["updated_at"] = row["updated_at"]
+            data["updated_by"] = row["updated_by"]
             return data
         return None
 
     def save_policy(self, dataset_id: str, *, owner_id: str, policy: dict[str, Any]) -> dict[str, Any]:
         now = _utc_iso()
+        actor = _actor(owner_id)
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO structured_policies (dataset_id, owner_id, policy_json, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO structured_policies (dataset_id, owner_id, policy_json, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(dataset_id) DO UPDATE SET
                   policy_json = excluded.policy_json,
-                  updated_at = excluded.updated_at
+                  updated_at = excluded.updated_at,
+                  updated_by = excluded.updated_by
                 """,
-                (dataset_id, owner_id, _json_dumps(policy), now),
+                (dataset_id, owner_id, _json_dumps(policy), now, actor),
+            )
+            conn.execute(
+                "UPDATE structured_datasets SET updated_at = ?, updated_by = ? WHERE id = ? AND owner_id = ?",
+                (now, actor, dataset_id, owner_id),
             )
             conn.commit()
         policy["updated_at"] = now
+        policy["updated_by"] = actor
         return policy
 
     def get_policy(self, dataset_id: str, *, owner_id: str) -> dict[str, Any] | None:
@@ -559,6 +629,7 @@ class StructuredStore:
         data = _json_loads(row["policy_json"], {})
         if isinstance(data, dict):
             data["updated_at"] = row["updated_at"]
+            data["updated_by"] = row["updated_by"]
             return data
         return None
 
@@ -607,6 +678,52 @@ class StructuredStore:
             "created_at": now,
         }
 
+    def add_exports(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not records:
+            return []
+        now = _utc_iso()
+        exports: list[dict[str, Any]] = []
+        rows: list[tuple[str, str, str, str | None, str, str, str, str, str]] = []
+        for record in records:
+            export_id = str(uuid.uuid4())
+            summary = record.get("summary") or {}
+            item = {
+                "id": export_id,
+                "owner_id": str(record.get("owner_id") or "local_user"),
+                "job_id": str(record.get("job_id") or ""),
+                "dataset_id": record.get("dataset_id"),
+                "export_format": str(record.get("export_format") or ""),
+                "file_path": str(record.get("file_path") or ""),
+                "filename": str(record.get("filename") or ""),
+                "summary": summary,
+                "created_at": now,
+            }
+            exports.append(item)
+            rows.append(
+                (
+                    item["id"],
+                    item["owner_id"],
+                    item["job_id"],
+                    item["dataset_id"],
+                    item["export_format"],
+                    item["file_path"],
+                    item["filename"],
+                    _json_dumps(summary),
+                    item["created_at"],
+                )
+            )
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO structured_exports
+                (id, owner_id, job_id, dataset_id, export_format, file_path, filename, summary_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+        return exports
+
     def list_exports(self, *, owner_id: str, job_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -623,6 +740,15 @@ class StructuredStore:
             item["summary"] = _json_loads(item.pop("summary_json", None), {})
             out.append(item)
         return out
+
+    def update_export_summary(self, export_id: str, summary: dict[str, Any]) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE structured_exports SET summary_json = ? WHERE id = ?",
+                (_json_dumps(summary or {}), export_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
 
 @lru_cache

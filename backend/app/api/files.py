@@ -795,7 +795,7 @@ async def delete_file(
             raise HTTPException(status_code=404, detail="文件不存在")
         audit_log("purge", "file", file_id, user=owner_id)
         return APIResponse(message="文件已彻底删除")
-    snapshot = await _fms.soft_delete_file(file_id)
+    snapshot = await _fms.soft_delete_file(file_id, updated_by=owner_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="文件不存在或已在回收站")
     audit_log("soft_delete", "file", file_id, user=owner_id)
@@ -809,7 +809,7 @@ async def restore_trashed_file(file_id: str, owner_id: str = Depends(require_aut
         _fms.assert_file_owner(file_id, owner_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="file not found")
-    restored = await _fms.restore_file(file_id)
+    restored = await _fms.restore_file(file_id, updated_by=owner_id)
     if not restored:
         raise HTTPException(status_code=404, detail="文件不在回收站")
     audit_log("restore", "file", file_id, user=owner_id)

@@ -147,8 +147,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL,
   skip_item_review INTEGER NOT NULL DEFAULT 0,
   config_json TEXT NOT NULL DEFAULT '{}',
+  config_locked_at TEXT,
+  locked_config_json TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
   owner_id TEXT NOT NULL DEFAULT 'local_user',
+  created_by TEXT,
+  updated_by TEXT,
   error_message TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

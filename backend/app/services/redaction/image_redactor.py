@@ -1,8 +1,3 @@
-"""
-图片匿名化模块
-处理图片/扫描件的区域匿名化（马赛克 / 高斯模糊 / 纯色填充）
-委托给 VisionService.apply_redaction 执行实际图像处理
-"""
 import logging
 from typing import Any
 
@@ -12,8 +7,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE_REDACTION_METHOD = "mosaic"
 DEFAULT_IMAGE_REDACTION_STRENGTH = 75
-MIN_IMAGE_REDACTION_STRENGTH = 1  # lower clamp bound for redaction strength
-MAX_IMAGE_REDACTION_STRENGTH = 100  # upper clamp bound for redaction strength
+MIN_IMAGE_REDACTION_STRENGTH = 1
+MAX_IMAGE_REDACTION_STRENGTH = 100
 DEFAULT_IMAGE_FILL_COLOR = "#000000"
 _VALID_IMAGE_REDACTION_METHODS = {"mosaic", "blur", "fill"}
 _VISUAL_SAFE_FILL_RGB_MIN = 245
@@ -46,7 +41,6 @@ def _config_value(config: Any, key: str) -> Any:
 
 
 def resolve_image_redaction_options(config: Any) -> tuple[str, int, str]:
-    """Return image redaction options with direct-call friendly defaults."""
     method = _config_value(config, "image_redaction_method") or DEFAULT_IMAGE_REDACTION_METHOD
     if method not in _VALID_IMAGE_REDACTION_METHODS:
         logger.warning("invalid image redaction method %r; falling back to mosaic", method)
@@ -75,6 +69,19 @@ def _clip_unit(value: Any) -> float:
     return max(0.0, min(1.0, numeric))
 
 
+def _coerce_box(box: BoundingBox | dict[str, Any]) -> BoundingBox | None:
+    if isinstance(box, BoundingBox):
+        return box
+    if isinstance(box, dict):
+        try:
+            return BoundingBox.model_validate(box)
+        except Exception as exc:
+            logger.warning("dropping invalid image redaction box payload: %s", exc)
+            return None
+    logger.warning("dropping unsupported image redaction box payload: %r", type(box))
+    return None
+
+
 def _safe_box(box: BoundingBox) -> BoundingBox | None:
     x1 = _clip_unit(box.x)
     y1 = _clip_unit(box.y)
@@ -90,9 +97,12 @@ def _safe_box(box: BoundingBox) -> BoundingBox | None:
     return box.model_copy(update={"x": x1, "y": y1, "width": width, "height": height})
 
 
-def _safe_boxes(boxes: list[BoundingBox]) -> list[BoundingBox]:
+def _safe_boxes(boxes: list[BoundingBox | dict[str, Any]]) -> list[BoundingBox]:
     safe: list[BoundingBox] = []
-    for box in boxes:
+    for raw_box in boxes:
+        box = _coerce_box(raw_box)
+        if box is None:
+            continue
         clipped = _safe_box(box)
         if clipped is not None:
             safe.append(clipped)
@@ -138,13 +148,16 @@ def _is_oversized_box(box: BoundingBox) -> bool:
 
 
 def prepare_image_redaction(
-    boxes: list[BoundingBox],
+    boxes: list[BoundingBox | dict[str, Any]],
     config: Any,
 ) -> tuple[list[BoundingBox], str, int, str]:
-    """Clamp boxes and choose a non-erasing effect for risky visual regions."""
     method, strength, fill_color = resolve_image_redaction_options(config)
     safe_boxes = _safe_boxes(boxes)
     selected_boxes = [box for box in safe_boxes if box.selected]
+
+    mode_value = _config_value(config, "replacement_mode")
+    if str(getattr(mode_value, "value", mode_value) or "") == "blackout":
+        return selected_boxes, "fill", strength, "#000000"
 
     has_visual_box = any(_is_visual_box(box) for box in selected_boxes)
     has_oversized_box = any(_is_oversized_box(box) for box in selected_boxes)
@@ -160,11 +173,6 @@ def prepare_image_redaction(
 
 
 class ImageRedactorMixin:
-    """
-    图片匿名化方法集合
-    设计为 mixin，由 Redactor 类继承使用
-    要求宿主类具有 self.vision_service 属性（VisionService 实例）
-    """
 
     async def _redact_image(
         self,
@@ -174,20 +182,6 @@ class ImageRedactorMixin:
         output_path: str,
         config: RedactionConfig,
     ) -> int:
-        """
-        图片/扫描件匿名化：HaS Image 风格块级匿名化
-        马赛克 / 高斯模糊 / 纯色填充，与文本 replacement_mode 无关
-
-        Args:
-            file_path: 输入文件路径
-            file_type: 文件类型（PDF_SCANNED 或 IMAGE）
-            selected_boxes: 选中的边界框列表
-            output_path: 输出文件路径
-            config: 匿名化配置
-
-        Returns:
-            匿名化区域数量
-        """
         safe_boxes, method, strength, fill_color = prepare_image_redaction(selected_boxes, config)
 
         await self.vision_service.apply_redaction(

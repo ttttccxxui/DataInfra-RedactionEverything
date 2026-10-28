@@ -48,6 +48,21 @@ import { useBatchReview } from './use-batch-review';
 import { useBatchSubmit } from './use-batch-submit';
 import { isBatchImageMode, resolveBatchFileType } from '../utils/file-type';
 
+function padTaskTimestampPart(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function defaultBatchTaskTitle(date = new Date()): string {
+  return `任务${[
+    date.getFullYear(),
+    padTaskTimestampPart(date.getMonth() + 1),
+    padTaskTimestampPart(date.getDate()),
+    padTaskTimestampPart(date.getHours()),
+    padTaskTimestampPart(date.getMinutes()),
+    padTaskTimestampPart(date.getSeconds()),
+  ].join('')}`;
+}
+
 export function useBatchWizard() {
   const { batchMode } = useParams<{ batchMode: string }>();
   const location = useLocation();
@@ -73,6 +88,7 @@ export function useBatchWizard() {
       return null;
     }
   });
+  const [activeJobTitle, setActiveJobTitle] = useState('');
   const [jobConfigLocked, setJobConfigLocked] = useState(false);
   const [jobSkipItemReview, setJobSkipItemReview] = useState(false);
   const hydratedFromUrlRef = useRef(false);
@@ -83,6 +99,7 @@ export function useBatchWizard() {
   const internalStepNavRef = useRef(false);
   const lastSavedJobConfigJson = useRef<string>('');
   const prevFurthestForImmediateSaveRef = useRef<Step>(1);
+  const prevActiveJobIdRef = useRef<string | null>(null);
 
   // ── Step tracking ──
   const [step, setStep] = useState<Step>(1);
@@ -277,6 +294,19 @@ export function useBatchWizard() {
     if (!newBatchRequested) newBatchConsumedRef.current = false;
   }, [newBatchRequested]);
 
+  useEffect(() => {
+    if (!activeJobId) {
+      setActiveJobTitle('');
+      prevActiveJobIdRef.current = null;
+      return;
+    }
+    if (prevActiveJobIdRef.current && prevActiveJobIdRef.current !== activeJobId) {
+      setActiveJobTitle('');
+    }
+    prevActiveJobIdRef.current = activeJobId;
+  }, [activeJobId]);
+
+
   const canSaveJobConfigDraft = useMemo(() => {
     if (queryJobId && activeJobId === queryJobId && !hydratedFromUrlRef.current) return false;
     return rows.every((row) => row.analyzeStatus === 'pending');
@@ -399,6 +429,7 @@ export function useBatchWizard() {
       itemIdByFileIdRef.current = {};
       batchGroupIdRef.current = null;
       setActiveJobId(null);
+      setActiveJobTitle('');
       setJobConfigLocked(false);
       setJobSkipItemReview(false);
       setRows([]);
@@ -430,7 +461,12 @@ export function useBatchWizard() {
 
     const snUrl = stepRaw ? Number.parseInt(stepRaw, 10) : NaN;
     const urlStepParsed = Number.isFinite(snUrl) ? (Math.min(5, Math.max(1, snUrl)) as Step) : null;
-    if (hydratedFromUrlRef.current && urlStepParsed !== null && step < urlStepParsed) {
+    if (
+      hydratedFromUrlRef.current &&
+      urlStepParsed !== null &&
+      step < urlStepParsed &&
+      !internalStepNavRef.current
+    ) {
       hydratedFromUrlRef.current = false;
     }
 
@@ -438,6 +474,7 @@ export function useBatchWizard() {
       const previewStep = urlStepParsed ?? 1;
       const previewRows = buildPreviewBatchRows(previewStep);
       setActiveJobId(PREVIEW_BATCH_JOB_ID);
+      setActiveJobTitle('预览任务');
       setJobConfigLocked(false);
       setJobSkipItemReview(false);
       itemIdByFileIdRef.current = Object.fromEntries(
@@ -461,6 +498,7 @@ export function useBatchWizard() {
       try {
         const detail = await getJob(jobId, { performance: false });
         if (hydrateGen !== batchHydrateGenRef.current) return;
+        setActiveJobTitle(detail.title || '');
         const validTypes: string[] = ['smart_batch', 'text_batch', 'image_batch'];
         if (!validTypes.includes(detail.job_type)) {
           setMsg({ text: t('batchWizard.jobTypeMismatch'), tone: 'warn' });
@@ -747,12 +785,14 @@ export function useBatchWizard() {
         }
       }
       if (!jid) {
+        const title = defaultBatchTaskTitle();
         const j = await createJob({
           job_type: toBatchJobType(mode),
-          title: `${t('batchHub.batch')} ${new Date().toLocaleString()}`,
+          title,
           config: payload,
         });
         jid = j.id;
+        setActiveJobTitle(j.title || title);
         writeLocalWizardMaxStep(jid, nextFurthest);
         setActiveJobId(jid);
         setJobConfigLocked(false);
@@ -831,6 +871,7 @@ export function useBatchWizard() {
     modeValid,
     mode,
     activeJobId,
+    activeJobTitle,
     refreshRowsFromActiveJob,
     jobConfigLocked,
     previewMode: isPreviewMode,

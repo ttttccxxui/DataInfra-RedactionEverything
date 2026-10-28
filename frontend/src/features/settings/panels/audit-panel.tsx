@@ -1,15 +1,30 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
-import { useEffect, useState } from 'react';
-import { EmptyState } from '@/components/EmptyState';
+import { useEffect, useMemo, useState } from 'react';
+import { Download, Search } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { authFetch } from '@/services/api-client';
 import { localizeErrorMessage } from '@/utils/localizeError';
-import { PanelHeading, parseJson } from './shared';
+import { formatDateTime, getDateTimestamp } from '@/lib/format-date';
+import { SettingsListPagination } from '../components/settings-list-pagination';
+import { parseJson } from './shared';
 
 interface AuditEntry {
   timestamp?: string;
@@ -20,11 +35,15 @@ interface AuditEntry {
   detail?: Record<string, unknown>;
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+
 export function AdminAuditPanel() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [userFilter, setUserFilter] = useState('');
   const [actionFilter, setActionFilter] = useState('');
   const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +77,26 @@ export function AdminAuditPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    setPage(1);
+  }, [entries, pageSize]);
+
+  const sortedEntries = useMemo(
+    () =>
+      [...entries].sort(
+        (a, b) =>
+          getDateTimestamp(b.timestamp) - getDateTimestamp(a.timestamp) ||
+          String(a.user ?? '').localeCompare(String(b.user ?? '')),
+      ),
+    [entries],
+  );
+  const totalPages = Math.max(1, Math.ceil(sortedEntries.length / pageSize));
+  const currentPage = Math.max(1, Math.min(page, totalPages));
+  const visibleEntries = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return sortedEntries.slice(start, start + pageSize);
+  }, [currentPage, pageSize, sortedEntries]);
+
   async function exportCsv() {
     setExporting(true);
     setError(null);
@@ -80,91 +119,148 @@ export function AdminAuditPanel() {
   }
 
   return (
-    <section className="surface-subtle space-y-4 p-4" data-testid="admin-audit-panel">
-      <PanelHeading title="审计日志" description="谁在什么时间上传、确认、导出了什么。仅管理员可见。" />
+    <section className="space-y-4" data-testid="admin-audit-panel">
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="space-y-1">
-          <Label htmlFor="audit-user">用户</Label>
-          <Input
-            id="audit-user"
-            className="h-9 w-40"
-            value={userFilter}
-            onChange={(event) => setUserFilter(event.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="audit-action">动作</Label>
-          <Input
-            id="audit-action"
-            className="h-9 w-40"
-            placeholder="upload / commit_all…"
-            value={actionFilter}
-            onChange={(event) => setActionFilter(event.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="audit-q">关键字</Label>
-          <Input
-            id="audit-q"
-            className="h-9 w-52"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-          />
-        </div>
-        <Button size="sm" disabled={loading} onClick={() => void load()}>
-          {loading ? '查询中…' : '查询'}
-        </Button>
-        <Button size="sm" variant="outline" disabled={exporting} onClick={() => void exportCsv()}>
-          {exporting ? '导出中…' : '导出 CSV'}
-        </Button>
-      </div>
-      <div className="overflow-hidden rounded-lg border border-border bg-background">
-        <div className="grid grid-cols-[11rem_8rem_8rem_minmax(0,1fr)] border-b border-border px-3 py-2 text-xs font-semibold text-muted-foreground">
-          <span>时间</span>
-          <span>用户</span>
-          <span>动作</span>
-          <span>资源 / 详情</span>
-        </div>
-        <div className="max-h-[30rem] overflow-auto">
-          {entries.map((entry, index) => (
-            <div
-              key={`${entry.timestamp}-${index}`}
-              className="grid min-h-9 grid-cols-[11rem_8rem_8rem_minmax(0,1fr)] items-center border-b border-border/60 px-3 py-1.5 text-xs last:border-b-0"
-            >
-              <span className="truncate text-muted-foreground" title={entry.timestamp}>
-                {(entry.timestamp || '').replace('T', ' ').slice(0, 19)}
-              </span>
-              <span className="truncate" title={entry.user}>
-                {entry.user}
-              </span>
-              <Badge variant="secondary" className="w-fit">
-                {entry.action}
-              </Badge>
-              <span
-                className="truncate text-muted-foreground"
-                title={`${entry.resource_type}:${entry.resource_id} ${JSON.stringify(entry.detail ?? {})}`}
-              >
-                {entry.resource_type}:{entry.resource_id}{' '}
-                {JSON.stringify(entry.detail ?? {})}
-              </span>
-            </div>
-          ))}
-          {!entries.length &&
-            (loading ? (
-              <div className="px-3 py-8 text-center text-sm text-muted-foreground">正在加载…</div>
-            ) : (
-              <EmptyState
-                title="暂无匹配的审计记录"
-                description="调整用户、动作或关键字筛选后再查询。"
+
+      <div className="overflow-hidden rounded-xl border border-border/70 bg-card shadow-[var(--shadow-control)]">
+        <div className="flex flex-col gap-3 border-b border-border/70 bg-card p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-1 flex-col gap-3 sm:flex-row">
+            <div className="relative w-full sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="audit-q"
+                className="pl-9"
+                placeholder="搜索关键字"
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
               />
-            ))}
+            </div>
+            <Input
+              id="audit-user"
+              className="w-full sm:w-44"
+              placeholder="用户"
+              value={userFilter}
+              onChange={(event) => setUserFilter(event.target.value)}
+            />
+            <Input
+              id="audit-action"
+              className="w-full sm:w-44"
+              placeholder="动作"
+              value={actionFilter}
+              onChange={(event) => setActionFilter(event.target.value)}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={exporting}
+              onClick={() => void exportCsv()}
+            >
+              <Download className="size-4" />
+              {exporting ? '导出中...' : '导出 CSV'}
+            </Button>
+            <Button type="button" disabled={loading} onClick={() => void load()}>
+              {loading ? '查询中...' : '查询'}
+            </Button>
+          </div>
         </div>
+
+        <TooltipProvider delayDuration={150}>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-16 text-center">序号</TableHead>
+                <TableHead className="text-center">操作时间</TableHead>
+                <TableHead className="text-center">用户</TableHead>
+                <TableHead className="text-center">动作</TableHead>
+                <TableHead className="text-center">资源类型</TableHead>
+                <TableHead className="text-center">资源ID</TableHead>
+                <TableHead className="text-center">详情</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visibleEntries.map((entry, index) => (
+                <TableRow key={`${entry.timestamp}-${entry.action}-${index}`}>
+                  <TableCell className="text-center font-medium text-muted-foreground">
+                    {(currentPage - 1) * pageSize + index + 1}
+                  </TableCell>
+                  <TableCell className="text-center tabular-nums">
+                    {formatDateTime(entry.timestamp)}
+                  </TableCell>
+                  <TableCell className="text-center">{entry.user || '-'}</TableCell>
+                  <TableCell className="text-center">
+                    <Badge variant="secondary" className="bg-primary/10 text-primary">
+                      {entry.action || '-'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-center">{entry.resource_type || '-'}</TableCell>
+                  <TableCell className="text-center">
+                    <span className="mx-auto block max-w-[14rem] truncate text-center" title={entry.resource_id}>
+                      {entry.resource_id || '-'}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-center">
+                    <AuditDetailText detail={entry.detail} />
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!visibleEntries.length && (
+                <TableRow>
+                  <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                    {loading ? '正在加载操作日志...' : '暂无匹配操作日志'}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TooltipProvider>
+
+        {sortedEntries.length > 0 && (
+          <SettingsListPagination
+            page={currentPage}
+            pageSize={pageSize}
+            total={sortedEntries.length}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            testIdPrefix="audit"
+          />
+        )}
       </div>
     </section>
   );
+}
+
+function AuditDetailText({ detail }: { detail?: Record<string, unknown> }) {
+  const compact = formatAuditDetail(detail);
+  const full = formatAuditDetail(detail, true);
+  if (compact === '-') {
+    return <span className="mx-auto block max-w-[28rem] truncate text-center">-</span>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="mx-auto block max-w-[28rem] cursor-default truncate text-center" title={compact}>
+          {compact}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="center"
+        className="max-h-80 max-w-[min(42rem,calc(100vw-2rem))] !overflow-auto whitespace-pre-wrap break-words text-left font-mono text-[11px] leading-relaxed"
+      >
+        {full}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function formatAuditDetail(detail?: Record<string, unknown>, pretty = false) {
+  if (!detail || Object.keys(detail).length === 0) return '-';
+  return JSON.stringify(detail, null, pretty ? 2 : 0);
 }

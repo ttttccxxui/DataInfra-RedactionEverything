@@ -120,7 +120,7 @@ class RepairMixin:
             if repaired:
                 conn.commit()
 
-        self._clear_outputs_for_file_ids(repaired_file_ids)
+        self._clear_outputs_for_file_ids(repaired_file_ids, clear_recognition=True)
 
         return repaired
 
@@ -196,7 +196,7 @@ class RepairMixin:
             if to_redispatch or redacting_rows:
                 conn.commit()
 
-        self._clear_outputs_for_file_ids(reset_file_ids)
+        self._clear_outputs_for_file_ids(reset_file_ids, clear_recognition=True)
         return to_redispatch
 
     def repair_stale_processing_items(
@@ -301,5 +301,5 @@ class RepairMixin:
             if to_redispatch:
                 conn.commit()
 
-        self._clear_outputs_for_file_ids(reset_file_ids)
+        self._clear_outputs_for_file_ids(reset_file_ids, clear_recognition=True)
         return to_redispatch

@@ -222,6 +222,7 @@ export function HistoryTable({
             <span className="jobs-exec-cell">{t('history.fileType')}</span>
             <span>{t('history.col.entities')}</span>
             <span className="jobs-status-cell">{t('history.col.status')}</span>
+            <span className="jobs-updated-by-cell">更新人</span>
             <span className="jobs-updated-cell">{t('history.col.time')}</span>
             <span className="jobs-action-column-head">{t('history.continueReview')}</span>
             <span className="jobs-action-column-head">{t('history.compareActionHeader')}</span>
@@ -260,6 +261,9 @@ export function HistoryTable({
                     </div>
                     <div className="hidden md:block">
                       <Skeleton className="h-5 w-20 rounded-full" />
+                    </div>
+                    <div className="hidden md:block">
+                      <Skeleton className="h-4 w-16 rounded-full" />
                     </div>
                     <div className="hidden md:block">
                       <Skeleton className="h-4 w-32 rounded-full" />

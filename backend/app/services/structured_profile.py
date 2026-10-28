@@ -1,4 +1,3 @@
-"""Column profiling, entity-type inference (rules + HaS semantics) and policy recommendation."""
 from __future__ import annotations
 
 import json
@@ -12,7 +11,8 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.models.type_mapping import canonical_type_id
+from app.models.errors import NotFoundError, ValidationError
+from app.models.type_mapping import resolve_type_id
 from app.services.structured_common import (
     MAX_PROFILE_ROWS,
     LoadedTable,
@@ -93,7 +93,6 @@ _VALUE_PATTERNS: list[tuple[re.Pattern[str], str, str, float]] = [
 ]
 
 
-# Type-inference acceptance thresholds (names for literals).
 _CUSTOM_TYPE_CONFIDENCE_MIN = 0.55
 _DEFAULT_TYPE_CONFIDENCE_MIN = 0.78
 
@@ -110,8 +109,6 @@ _PII_DEFAULT_GENERALIZE_TYPES = {"ADDRESS"}
 _PII_DEFAULT_TOKENIZE_TYPES = {"PERSON"}
 _SECURITY_DEFAULT_SUPPRESS_TYPES = {"USERNAME_PASSWORD", "AUTH_SECRET"}
 
-# 库表链的 HaS 查询词 → 类型 id：查询词与其含义同址共存（清单即真相源，
-# 与文本/视觉链的清单直传同构）。回程按请求打标：返回桶名就是这里发出的词。
 _STRUCTURED_HAS_QUERY_TYPES = {
     "姓名": "PERSON", "电话": "PHONE", "邮箱": "EMAIL", "身份证号": "ID_CARD",
     "银行卡号": "BANK_CARD", "银行账号": "BANK_ACCOUNT", "地址": "ADDRESS",
@@ -157,10 +154,15 @@ def profile_dataset(dataset_id: str, *, owner_id: str, store: StructuredStore | 
     store = store or get_structured_store()
     dataset = store.get_dataset(dataset_id, owner_id=owner_id)
     if not dataset:
-        raise ValueError("dataset not found")
-    table = load_dataset_rows(dataset, owner_id=owner_id, limit=MAX_PROFILE_ROWS, store=store)
+        raise NotFoundError("dataset not found")
+    table, source_status = load_profile_table(dataset, dataset_id=dataset_id, owner_id=owner_id, store=store)
     columns = [profile_column(column, [row.get(column) for row in table.rows]) for column in table.columns]
-    semantic_result = infer_column_semantics_with_has(dataset, table, columns)
+    columns = apply_registered_schema_types(dataset, columns)
+    semantic_result = (
+        source_status
+        if source_status
+        else infer_column_semantics_with_has(dataset, table, columns)
+    )
     columns = merge_semantic_column_profiles(columns, semantic_result.get("columns") or {})
     profile = {
         "dataset_id": dataset_id,
@@ -181,6 +183,90 @@ def profile_dataset(dataset_id: str, *, owner_id: str, store: StructuredStore | 
     return profile
 
 
+def load_profile_table(
+    dataset: dict[str, Any],
+    *,
+    dataset_id: str,
+    owner_id: str,
+    store: StructuredStore,
+) -> tuple[LoadedTable, dict[str, Any] | None]:
+    try:
+        return load_dataset_rows(dataset, owner_id=owner_id, limit=MAX_PROFILE_ROWS, store=store), None
+    except Exception as exc:
+        if not dataset.get("connection_id"):
+            raise
+        fallback = registered_schema_table(dataset)
+        if not fallback.columns:
+            raise
+        logger.warning(
+            "Structured dataset %s source unavailable; profiling from registered schema: %s",
+            dataset_id,
+            exc,
+        )
+        return fallback, {
+            "engine": "has_ner",
+            "status": "source_unavailable_schema_only",
+            "duration_ms": 0,
+            "matched_columns": 0,
+            "message": "database source unavailable; profile generated from registered schema",
+        }
+
+
+def registered_schema_table(dataset: dict[str, Any]) -> LoadedTable:
+    columns: list[str] = []
+    for item in dataset.get("schema") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("column") or "").strip()
+        if name and name not in columns:
+            columns.append(name)
+    row_count = dataset.get("row_count_estimate")
+    try:
+        row_count_estimate = int(row_count) if row_count is not None else None
+    except (TypeError, ValueError):
+        row_count_estimate = None
+    return LoadedTable(columns=columns, rows=[], row_count_estimate=row_count_estimate)
+
+
+def apply_registered_schema_types(dataset: dict[str, Any], columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    schema_types = {
+        str(item.get("name") or item.get("column") or ""): str(item.get("data_type") or "")
+        for item in dataset.get("schema") or []
+        if isinstance(item, dict)
+    }
+    for column in columns:
+        schema_type = schema_types.get(str(column.get("name") or ""))
+        if schema_type:
+            column["data_type"] = schema_type
+    return columns
+
+
+def masked_sample_values(samples: list[Any], *, entity_type: str, recommended_policy: str) -> list[Any]:
+    if (recommended_policy or "keep") == "keep":
+        return list(samples)
+    from app.services.structured_masking import mask_value
+
+    out: list[Any] = []
+    for sample in samples:
+        text = normalize_value(sample)
+        if not text:
+            out.append(sample)
+        elif entity_type in {"AUTH_SECRET", "USERNAME_PASSWORD"}:
+            out.append("*" * min(len(text), 12))
+        else:
+            out.append(mask_value(text, entity_type=entity_type))
+    return out
+
+
+def _with_masked_samples(profile: dict[str, Any], samples: list[Any]) -> dict[str, Any]:
+    profile["sample_values"] = masked_sample_values(
+        samples,
+        entity_type=str(profile.get("entity_type") or "CUSTOM"),
+        recommended_policy=str(profile.get("recommended_policy") or "keep"),
+    )
+    return profile
+
+
 def profile_column(column: str, values: list[Any]) -> dict[str, Any]:
     non_empty = [value for value in values if value not in (None, "")]
     total = max(1, len(values))
@@ -188,47 +274,44 @@ def profile_column(column: str, values: list[Any]) -> dict[str, Any]:
     unique_rate = round(len({normalize_value(value) for value in non_empty}) / max(1, len(non_empty)), 4)
     samples = list(dict.fromkeys(cell_to_json(value) for value in non_empty[:20]))[:8]
     if is_probable_technical_identifier(column, non_empty, unique_rate):
-        return {
+        return _with_masked_samples({
             "name": column,
             "data_type": infer_runtime_type(non_empty),
             "null_rate": null_rate,
             "unique_rate": unique_rate,
-            "sample_values": samples,
             "entity_type": "CUSTOM",
             "risk_level": "low",
             "confidence": 0.88,
             "reasons": ["technical_identifier"],
             "recommended_policy": "keep",
-        }
+        }, samples)
     by_value = classify_by_values(non_empty)
     by_name = classify_by_name(column)
     if is_business_descriptor_column(column) and not blocks_business_descriptor(by_name, by_value):
-        return {
+        return _with_masked_samples({
             "name": column,
             "data_type": infer_runtime_type(non_empty),
             "null_rate": null_rate,
             "unique_rate": unique_rate,
-            "sample_values": samples,
             "entity_type": "CUSTOM",
             "risk_level": "low",
             "confidence": 0.84,
             "reasons": ["business_descriptor"],
             "recommended_policy": "keep",
-        }
+        }, samples)
     chosen = choose_classification(by_name, by_value, unique_rate)
     entity_type, risk_level, confidence, reasons = chosen
-    return {
+    return _with_masked_samples({
         "name": column,
         "data_type": infer_runtime_type(non_empty),
         "null_rate": null_rate,
         "unique_rate": unique_rate,
-        "sample_values": samples,
         "entity_type": entity_type,
         "risk_level": risk_level,
         "confidence": confidence,
         "reasons": reasons,
         "recommended_policy": recommended_action(entity_type, risk_level, unique_rate),
-    }
+    }, samples)
 
 
 def infer_column_semantics_with_has(
@@ -239,8 +322,6 @@ def infer_column_semantics_with_has(
     started = time.perf_counter()
     if not table.rows or not table.columns:
         return {"status": "skipped_empty", "columns": {}, "duration_ms": 0}
-    # 经 facade 取 has_text_semantic_ready：测试 monkeypatch 的是
-    # structured_service.has_text_semantic_ready（函数内导入避免循环导入）
     from app.services import structured_service
 
     if not structured_service.has_text_semantic_ready():
@@ -328,18 +409,6 @@ def should_include_column_for_structured_semantics(
     profile: dict[str, Any],
     samples: list[str],
 ) -> bool:
-    """Only send genuinely ambiguous table columns to HaS semantic enrichment.
-
-    Deterministic table signals cover most structured PII. Calling the text
-    model for every obvious phone/email/name column makes the policy screen feel
-    slow and does not improve recall, so HaS is reserved for low-confidence
-    natural-language columns where the field name is not enough.
-
-    Business-descriptor columns (备注/摘要/描述/memo/note...) are deliberately
-    NOT excluded: they commonly embed names/phones, so they keep their low-risk
-    default classification but stay eligible for HaS semantic review — the
-    review can only upgrade them (never below the deterministic result).
-    """
     reasons = {str(reason) for reason in (profile.get("reasons") or [])}
     if "technical_identifier" in reasons:
         return False
@@ -415,18 +484,13 @@ def map_has_entities_to_columns(
 
 
 def normalize_structured_entity_type(raw_type: str) -> str:
-    """Tag-by-request for the structured chain: a result bucket is keyed by a
-    query word WE sent (_STRUCTURED_HAS_QUERY_TYPES) — no global cn_terms
-    lookup. English echo variants land via pure string hygiene
-    (canonical_type_id). Unknown open-vocabulary labels become CUSTOM."""
     value = str(raw_type or "").strip()
     if not value:
         return "CUSTOM"
-    canonical = _STRUCTURED_HAS_QUERY_TYPES.get(value) or canonical_type_id(value)
-    if canonical == "BANK_ACCOUNT":
-        return "BANK_CARD"
-    if canonical in {"PASSWORD", "TOKEN", "SECRET_KEY", "API_KEY", "OTP", "ACCOUNT_PASSWORD", "LOGIN_PASSWORD"}:
-        return "AUTH_SECRET"
+    # 别名一律走 type_mapping 的 deprecated_to（PASSWORD/TOKEN/... -> AUTH_SECRET 在表里）。
+    # 原先还有一条 BANK_ACCOUNT -> BANK_CARD：方向是反的（账号被折成卡号），而且两者
+    # 都是启用中的预置项、不是别名关系，已删除。
+    canonical = resolve_type_id(_STRUCTURED_HAS_QUERY_TYPES.get(value) or value)
     if canonical in _STRUCTURED_SEMANTIC_TYPE_RISK:
         return canonical
     return canonical if canonical in {"PERSON", "PHONE", "EMAIL", "ID_CARD", "ADDRESS"} else "CUSTOM"
@@ -466,6 +530,7 @@ def merge_semantic_column_profiles(
                     "recommended_policy": recommended_action(entity_type, risk_level, float(out.get("unique_rate") or 0)),
                 }
             )
+            _with_masked_samples(out, out.get("sample_values") or [])
         merged.append(out)
     return merged
 
@@ -631,7 +696,7 @@ def save_policy(
 ) -> dict[str, Any]:
     store = store or get_structured_store()
     if not store.get_dataset(dataset_id, owner_id=owner_id):
-        raise ValueError("dataset not found")
+        raise NotFoundError("dataset not found")
     profile = store.get_profile(dataset_id, owner_id=owner_id) or profile_dataset(dataset_id, owner_id=owner_id, store=store)
     validate_policy_columns(profile, columns)
     policy = {
@@ -665,7 +730,7 @@ def validate_policy_columns(profile: dict[str, Any], columns: list[dict[str, Any
             parts.append("unknown columns: " + ", ".join(unknown[:5]))
         if missing:
             parts.append("missing columns: " + ", ".join(missing[:5]))
-        raise ValueError(
+        raise ValidationError(
             "Column policy does not match the current dataset columns ("
             + "; ".join(parts)
             + "). Regenerate the policy or refresh the dataset before saving."

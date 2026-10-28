@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.types import Message
 
 from app.api import audit as audit_api
@@ -51,6 +51,27 @@ from app.models.schemas import HealthResponse
 # 生产环境用 JSON 格式；DEBUG 模式用文本格式（人类可读）
 setup_logging(json_mode=settings.LOG_JSON and not settings.DEBUG, level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+STATIC_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+HTML_CACHE_CONTROL = "no-store"
+SERVICES_HEALTH_CACHE_TTL_SEC = 8.0
+_services_health_cache: tuple[float, dict] | None = None
+_services_health_lock = asyncio.Lock()
+
+
+class CachedStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers.setdefault("Cache-Control", STATIC_ASSET_CACHE_CONTROL)
+        return response
+
+
+def frontend_index_response() -> FileResponse:
+    response = FileResponse(_FRONTEND_INDEX)
+    response.headers.setdefault("Cache-Control", HTML_CACHE_CONTROL)
+    return response
 
 
 def _storage_files() -> list[tuple[str, str]]:
@@ -488,7 +509,7 @@ _FRONTEND_INDEX = (
     else None
 )
 if _FRONTEND_INDEX is not None and os.path.isdir(os.path.join(_FRONTEND_DIST, "assets")):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_FRONTEND_DIST, "assets")), name="assets")
+    app.mount("/assets", CachedStaticFiles(directory=os.path.join(_FRONTEND_DIST, "assets")), name="assets")
     logger.info("Serving built frontend from %s", _FRONTEND_DIST)
 else:
     logger.warning("Frontend dist not found at %s; API-only mode", _FRONTEND_DIST)
@@ -506,7 +527,7 @@ async def metrics_view(request: Request):
 async def root():
     """Serve the built SPA when present, else API info."""
     if _FRONTEND_INDEX is not None:
-        return FileResponse(_FRONTEND_INDEX)
+        return frontend_index_response()
     return {
         "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
@@ -532,8 +553,26 @@ async def health_check():
 @app.get("/health/services", tags=["health"])
 async def services_health():
     """Return model service health."""
+    import time
+
+    global _services_health_cache
+
+    now = time.monotonic()
+    cached = _services_health_cache
+    if cached is not None and now - cached[0] <= SERVICES_HEALTH_CACHE_TTL_SEC:
+        return {**cached[1], "cached": True}
+
+    async with _services_health_lock:
+        now = time.monotonic()
+        cached = _services_health_cache
+        if cached is not None and now - cached[0] <= SERVICES_HEALTH_CACHE_TTL_SEC:
+            return {**cached[1], "cached": True}
+        payload = await _collect_services_health()
+        _services_health_cache = (time.monotonic(), payload)
+        return payload
 
 
+async def _collect_services_health() -> dict:
 
     import asyncio
     import time
@@ -701,8 +740,11 @@ async def _spa_fallback(full_path: str):
         raise StarletteHTTPException(status_code=404)
     candidate = os.path.normpath(os.path.join(_FRONTEND_DIST, full_path))
     if full_path and candidate.startswith(_FRONTEND_DIST) and os.path.isfile(candidate):
-        return FileResponse(candidate)
-    return FileResponse(_FRONTEND_INDEX)
+        response = FileResponse(candidate)
+        if full_path.startswith("assets/"):
+            response.headers.setdefault("Cache-Control", STATIC_ASSET_CACHE_CONTROL)
+        return response
+    return frontend_index_response()
 
 
 if __name__ == "__main__":

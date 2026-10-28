@@ -10,7 +10,13 @@ import { cn } from '@/lib/utils';
 import { useT } from '@/i18n';
 import type { StructuredDataset } from '@/services/structuredApi';
 import { isDatasetDeliveryReady, policyReviewUrlForDataset } from '../lib/dataset-utils';
-import { DatasetIdentity, EmptyState, ListPager } from './shared';
+import {
+  DatasetIdentity,
+  EmptyState,
+  ListPager,
+  STRUCTURED_DEFAULT_PAGE_SIZE,
+  STRUCTURED_LIST_PAGE_SIZE_OPTIONS,
+} from './shared';
 
 export function DatasetRegistryCard({
   title,
@@ -31,14 +37,14 @@ export function DatasetRegistryCard({
 }) {
   const t = useT();
   const [page, setPage] = React.useState(0);
-  const pageSize = 6;
+  const [pageSize, setPageSize] = React.useState(STRUCTURED_DEFAULT_PAGE_SIZE);
   const pageCount = Math.max(1, Math.ceil(datasets.length / pageSize));
   const safePage = Math.min(page, pageCount - 1);
   const visibleDatasets = datasets.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
   React.useEffect(() => {
     setPage(0);
-  }, [datasets.length]);
+  }, [datasets.length, pageSize]);
 
   return (
     <Card className="page-surface border-border/70 shadow-[var(--shadow-control)]">
@@ -66,7 +72,7 @@ export function DatasetRegistryCard({
             ))
           )}
         </div>
-        {datasets.length > pageSize ? (
+        {datasets.length > 0 ? (
           <ListPager
             label={t('structured.common.datasetsLabel')}
             page={safePage}
@@ -75,6 +81,8 @@ export function DatasetRegistryCard({
             pageSize={pageSize}
             visibleCount={visibleDatasets.length}
             onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={STRUCTURED_LIST_PAGE_SIZE_OPTIONS}
           />
         ) : null}
       </CardContent>

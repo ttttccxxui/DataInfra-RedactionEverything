@@ -8,6 +8,7 @@ from __future__ import annotations
 import os as _os
 import re
 import uuid
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -32,10 +33,15 @@ class EntityTypeConfig(BaseModel):
     examples: list[str] = Field(default_factory=list, description="Example texts")
     color: str = Field(default="#6B7280", description="Display color")
     regex_pattern: str | None = Field(None, description="Optional regex fallback")
+    regex_chains: dict[str, bool] | None = Field(default=None, description="Regex fallback chains")
     use_llm: bool = Field(default=True, description="Whether semantic recognition is enabled")
     enabled: bool = Field(default=True, description="Whether the type is enabled")
     order: int = Field(default=100, description="Sort order")
     tag_template: str | None = Field(None, description="Structured replacement tag template")
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
 
 
 class EntityTypesResponse(BaseModel):
@@ -123,6 +129,14 @@ _raw_presets = load_json(_PRESET_JSON_PATH, default={})
 PRESET_ENTITY_TYPES: dict[str, EntityTypeConfig] = {
     k: EntityTypeConfig(**v) for k, v in _raw_presets.items()
 }
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _actor(owner_id: str | None) -> str:
+    return str(owner_id or "local_user")
 
 def is_default_generic_entity_type_id(type_id: str) -> bool:
     """Return whether a type belongs to the broad generic default schema.
@@ -407,6 +421,72 @@ def get_regex_types(owner_id: str | None = None) -> list[EntityTypeConfig]:
     return [t for t in db.values() if t.enabled and t.regex_pattern]
 
 
+def _canonical_regex_chain(chain: str | None) -> str:
+    raw = str(chain or "").strip().lower()
+    if raw in {"vision", "ocr", "ocr_has", "image", "image_text"}:
+        return "vision"
+    return "text"
+
+
+def regex_chain_enabled(config: EntityTypeConfig, chain: str | None = None) -> bool:
+    """Return whether a regex fallback item is allowed on the requested chain."""
+    chains = getattr(config, "regex_chains", None)
+    if chains is None:
+        return True
+    key = _canonical_regex_chain(chain)
+    if isinstance(chains, dict):
+        return bool(chains.get(key, False))
+    if isinstance(chains, (list, tuple, set)):
+        return key in {_canonical_regex_chain(str(item)) for item in chains}
+    if isinstance(chains, str):
+        return _canonical_regex_chain(chains) == key
+    return False
+
+
+def regex_fallback_active(config: EntityTypeConfig) -> bool:
+    """Return whether an entity type can participate in regex fallback."""
+    return bool(
+        getattr(config, "enabled", True)
+        and str(getattr(config, "regex_pattern", "") or "").strip()
+    )
+
+
+def select_regex_types(
+    selected_type_ids: list[str] | None = None,
+    owner_id: str | None = None,
+    chain: str | None = None,
+) -> list[EntityTypeConfig]:
+    """Resolve selected IDs to enabled regex fallback entity types."""
+    db = _db_for_owner(owner_id)
+    chain_key = _canonical_regex_chain(chain)
+
+    def keep(type_config: EntityTypeConfig | None) -> bool:
+        return bool(
+            type_config
+            and regex_fallback_active(type_config)
+            and regex_chain_enabled(type_config, chain_key)
+        )
+
+    if selected_type_ids is None:
+        return [t for t in db.values() if keep(t)]
+
+    resolved: list[EntityTypeConfig] = []
+    seen: set[str] = set()
+    for raw_id in selected_type_ids:
+        type_id = str(raw_id or "").strip()
+        if not type_id:
+            continue
+        type_config = db.get(type_id) or db.get(canonical_type_id(type_id))
+        if not keep(type_config):
+            continue
+        final_id = str(type_config.id)
+        if final_id in seen:
+            continue
+        seen.add(final_id)
+        resolved.append(type_config)
+    return resolved
+
+
 
 
 def resolve_requested_entity_types(
@@ -472,6 +552,8 @@ def create_type(
     with store_lock(_entity_types_store_path(owner_id)):
         db = _db_for_owner(owner_id)
         type_id = f"custom_{uuid.uuid4().hex[:8]}"
+        now = _now_iso()
+        actor = _actor(owner_id)
         coref_enabled = bool(request.coref_enabled)
         data_domain, generic_target = normalize_text_taxonomy(
             request.data_domain,
@@ -497,6 +579,10 @@ def create_type(
             tag_template=build_tag_template(request.name),
             enabled=True,
             order=200,
+            created_at=now,
+            created_by=actor,
+            updated_at=now,
+            updated_by=actor,
         )
         db[type_id] = new_type
         if owner_id is None:
@@ -543,6 +629,8 @@ def update_type(
         if "name" in update_data or "tag_template" in update_data:
             next_name = update_data.get("name", existing.name)
             update_data["tag_template"] = build_tag_template(next_name)
+        update_data["updated_at"] = _now_iso()
+        update_data["updated_by"] = _actor(owner_id)
         for key, value in update_data.items():
             setattr(existing, key, value)
         db[type_id] = existing
@@ -580,6 +668,8 @@ def toggle_type(type_id: str, owner_id: str | None = None) -> bool | None:
         if type_id not in db:
             return None
         db[type_id].enabled = not db[type_id].enabled
+        db[type_id].updated_at = _now_iso()
+        db[type_id].updated_by = _actor(owner_id)
         if owner_id is None:
             entity_types_db = db
         _persist_entity_types(db, owner_id)
@@ -599,4 +689,3 @@ def reset_types(owner_id: str | None = None) -> None:
 # Public accessor — use this instead of importing entity_types_db directly,
 # so other layers don't couple to the module-level mutable dict.
 # ---------------------------------------------------------------------------
-

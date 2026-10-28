@@ -226,17 +226,6 @@ const PlaygroundInner: FC = () => {
       {stage === 'upload' && (
         <div className="page-shell !max-w-[min(100%,2048px)] !px-3 !py-3 sm:!px-5 sm:!py-4 2xl:!px-8">
           <div className="page-stack gap-3 overflow-hidden">
-            <section className="flex flex-none flex-wrap items-end justify-between gap-3">
-              <div className="min-w-0 space-y-1">
-                <span className="saas-kicker">{t('playground.upload.kicker')}</span>
-                <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-                  {t('playground.title')}
-                </h1>
-                <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-                  {t('page.playground.sub')}
-                </p>
-              </div>
-            </section>
             <PlaygroundUpload ctx={ctx} />
           </div>
         </div>

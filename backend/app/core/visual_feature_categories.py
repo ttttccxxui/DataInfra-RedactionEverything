@@ -132,7 +132,13 @@ VISUAL_FEATURE_SLUGS = frozenset(SLUG_TO_CLASS_ID)
 # official_seal, is routed to LocateAnything.
 OCR_FALLBACK_ONLY_VISUAL_SLUGS = frozenset()
 LOCATE_ANYTHING_VISUAL_SLUGS = VISUAL_FEATURE_SLUGS - OCR_FALLBACK_ONLY_VISUAL_SLUGS
-DEFAULT_EXCLUDED_VISUAL_FEATURE_SLUGS = frozenset()
+# Mirror HAS_IMAGE: drop the page-container class from the null-types default
+# fan-out. "paper"/纸质文档 on a scanned page is the whole image — it only
+# produces full-page masks. Opt-in via the checklist still works; the
+# page-cover drop in VisionService is the safety net for that path.
+DEFAULT_EXCLUDED_VISUAL_FEATURE_SLUGS = frozenset({
+    "paper",
+})
 DEFAULT_VISUAL_FEATURE_SLUGS: tuple[str, ...] = tuple(
     item.id for item in VISUAL_FEATURE_CATEGORIES if item.id not in DEFAULT_EXCLUDED_VISUAL_FEATURE_SLUGS
 )

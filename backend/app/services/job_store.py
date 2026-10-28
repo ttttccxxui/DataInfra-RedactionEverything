@@ -63,6 +63,22 @@ class JobStore(RepairMixin):
                 conn.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
             if "owner_id" not in job_cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'local_user'")
+            if "created_by" not in job_cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN created_by TEXT")
+            if "updated_by" not in job_cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN updated_by TEXT")
+            if "config_locked_at" not in job_cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN config_locked_at TEXT")
+            if "locked_config_json" not in job_cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN locked_config_json TEXT")
+            conn.execute(
+                "UPDATE jobs SET created_by = COALESCE(NULLIF(created_by, ''), owner_id, 'local_user') "
+                "WHERE created_by IS NULL OR created_by = ''"
+            )
+            conn.execute(
+                "UPDATE jobs SET updated_by = COALESCE(NULLIF(updated_by, ''), owner_id, 'local_user') "
+                "WHERE updated_by IS NULL OR updated_by = ''"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner_id)")
             # Migrate CHECK constraint to include all current job types.
             try:
@@ -86,8 +102,12 @@ class JobStore(RepairMixin):
                             status TEXT NOT NULL,
                             skip_item_review INTEGER NOT NULL DEFAULT 0,
                             config_json TEXT NOT NULL DEFAULT '{}',
+                            config_locked_at TEXT,
+                            locked_config_json TEXT,
                             priority INTEGER NOT NULL DEFAULT 0,
                             owner_id TEXT NOT NULL DEFAULT 'local_user',
+                            created_by TEXT,
+                            updated_by TEXT,
                             error_message TEXT,
                             created_at TEXT NOT NULL,
                             updated_at TEXT NOT NULL
@@ -95,9 +115,14 @@ class JobStore(RepairMixin):
                     """)
                     conn.execute("""
                         INSERT INTO jobs (id, job_type, title, status, skip_item_review,
-                                         config_json, priority, owner_id, error_message, created_at, updated_at)
+                                         config_json, config_locked_at, locked_config_json,
+                                         priority, owner_id, created_by, updated_by,
+                                         error_message, created_at, updated_at)
                         SELECT id, job_type, title, status, skip_item_review,
-                               config_json, COALESCE(priority, 0), COALESCE(owner_id, 'local_user'),
+                               config_json, NULL, NULL,
+                               COALESCE(priority, 0), COALESCE(owner_id, 'local_user'),
+                               COALESCE(created_by, owner_id, 'local_user'),
+                               COALESCE(updated_by, owner_id, 'local_user'),
                                error_message, created_at, updated_at
                         FROM jobs_old
                     """)
@@ -117,15 +142,18 @@ class JobStore(RepairMixin):
         skip_item_review: bool = False,
         priority: int = 0,
         owner_id: str = "local_user",
+        created_by: str | None = None,
+        updated_by: str | None = None,
     ) -> str:
         jid = str(uuid.uuid4())
         now = _utc_iso()
         cfg = json.dumps(config or {}, ensure_ascii=False)
+        actor = str(updated_by or created_by or owner_id or "local_user")
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO jobs (id, job_type, title, status, skip_item_review, config_json, priority, owner_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (id, job_type, title, status, skip_item_review, config_json, priority, owner_id, created_by, updated_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     jid,
@@ -136,6 +164,8 @@ class JobStore(RepairMixin):
                     cfg,
                     int(priority),
                     owner_id or "local_user",
+                    str(created_by or actor),
+                    actor,
                     now,
                     now,
                 ),
@@ -157,7 +187,12 @@ class JobStore(RepairMixin):
             conn.commit()
         return iid
 
-    def _clear_outputs_for_file_ids(self, file_ids: list[str] | set[str]) -> None:
+    def _clear_outputs_for_file_ids(
+        self,
+        file_ids: list[str] | set[str],
+        *,
+        clear_recognition: bool = False,
+    ) -> None:
         if not file_ids:
             return
         try:
@@ -167,25 +202,26 @@ class JobStore(RepairMixin):
             return
         for file_id in dict.fromkeys(str(fid) for fid in file_ids if fid):
             try:
-                clear_file_output(file_id)
+                clear_file_output(file_id, clear_recognition=clear_recognition)
             except Exception:
                 logging.getLogger(__name__).warning(
                     "Failed to clear stale output for file %s", file_id, exc_info=True
                 )
 
-    def submit_job(self, job_id: str) -> None:
+    def submit_job(self, job_id: str, updated_by: str | None = None) -> None:
         """Submit a job and reset non-terminal items to pending."""
         now = _utc_iso()
         terminal = (JobItemStatus.AWAITING_REVIEW.value, JobItemStatus.COMPLETED.value)
         reset_file_ids: list[str] = []
         with self._connect() as conn:
-            cur = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,))
+            cur = conn.execute("SELECT status, owner_id FROM jobs WHERE id = ?", (job_id,))
             row = cur.fetchone()
             if not row:
                 raise KeyError(job_id)
             st = row["status"]
             if st in (JobStatus.COMPLETED.value, JobStatus.CANCELLED.value):
                 raise ValueError(f"job not submittable: {st}")
+            actor = str(updated_by or row["owner_id"] or "local_user")
             reset_rows = conn.execute(
                 """
                 SELECT file_id FROM job_items
@@ -195,8 +231,8 @@ class JobStore(RepairMixin):
             ).fetchall()
             reset_file_ids = [str(r["file_id"]) for r in reset_rows if r["file_id"]]
             conn.execute(
-                "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-                (JobStatus.QUEUED.value, now, job_id),
+                "UPDATE jobs SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (JobStatus.QUEUED.value, now, actor, job_id),
             )
             # Reset all non-terminal items to pending for queue dispatch.
             conn.execute(
@@ -208,12 +244,16 @@ class JobStore(RepairMixin):
                 (JobItemStatus.PENDING.value, now, job_id, *terminal),
             )
             conn.commit()
-        self._clear_outputs_for_file_ids(reset_file_ids)
+        self._clear_outputs_for_file_ids(reset_file_ids, clear_recognition=True)
 
-    def cancel_job(self, job_id: str) -> None:
+    def cancel_job(self, job_id: str, updated_by: str | None = None) -> None:
         now = _utc_iso()
         cancelled_file_ids: list[str] = []
         with self._connect() as conn:
+            job_row = conn.execute("SELECT owner_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if not job_row:
+                raise KeyError(job_id)
+            actor = str(updated_by or job_row["owner_id"] or "local_user")
             rows = conn.execute(
                 """
                 SELECT file_id FROM job_items
@@ -228,8 +268,8 @@ class JobStore(RepairMixin):
             ).fetchall()
             cancelled_file_ids = [str(r["file_id"]) for r in rows if r["file_id"]]
             conn.execute(
-                "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-                (JobStatus.CANCELLED.value, now, job_id),
+                "UPDATE jobs SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (JobStatus.CANCELLED.value, now, actor, job_id),
             )
             conn.execute(
                 """
@@ -246,7 +286,7 @@ class JobStore(RepairMixin):
                 ),
             )
             conn.commit()
-        self._clear_outputs_for_file_ids(cancelled_file_ids)
+        self._clear_outputs_for_file_ids(cancelled_file_ids, clear_recognition=True)
 
     def delete_job(self, job_id: str) -> None:
         with self._connect() as conn:
@@ -295,7 +335,7 @@ class JobStore(RepairMixin):
             conn.commit()
             return dict(row)
 
-    def delete_items_for_file(self, file_id: str) -> list[dict[str, Any]]:
+    def delete_items_for_file(self, file_id: str, updated_by: str | None = None) -> list[dict[str, Any]]:
         """Remove all job item rows that reference a deleted file."""
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM job_items WHERE file_id = ?", (file_id,)).fetchall()
@@ -306,7 +346,10 @@ class JobStore(RepairMixin):
             conn.execute("DELETE FROM job_items WHERE file_id = ?", (file_id,))
             now = _utc_iso()
             for job_id in affected_job_ids:
-                conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
+                conn.execute(
+                    "UPDATE jobs SET updated_at = ?, updated_by = COALESCE(?, updated_by, owner_id, 'local_user') WHERE id = ?",
+                    (now, updated_by, job_id),
+                )
             conn.commit()
             return deleted
 
@@ -521,7 +564,17 @@ class JobStore(RepairMixin):
                 )
                 conn.commit()
         if file_id_to_clean:
-            self._clear_outputs_for_file_ids([file_id_to_clean])
+            clear_recognition = status in {
+                JobItemStatus.PENDING,
+                JobItemStatus.PROCESSING,
+                JobItemStatus.FAILED,
+                JobItemStatus.QUEUED,
+                JobItemStatus.PARSING,
+                JobItemStatus.NER,
+                JobItemStatus.VISION,
+                JobItemStatus.CANCELLED,
+            }
+            self._clear_outputs_for_file_ids([file_id_to_clean], clear_recognition=clear_recognition)
 
     def update_job_status(self, job_id: str, status: JobStatus, error_message: str | None = None) -> None:
         now = _utc_iso()
@@ -663,7 +716,7 @@ class JobStore(RepairMixin):
             )
             conn.commit()
         if file_id_to_clean:
-            self._clear_outputs_for_file_ids([file_id_to_clean])
+            self._clear_outputs_for_file_ids([file_id_to_clean], clear_recognition=True)
 
     def approve_items_review_bulk(
         self, item_ids: list[str], reviewer: str = "local"
@@ -829,13 +882,49 @@ class JobStore(RepairMixin):
             rows = conn.execute("SELECT DISTINCT file_id FROM job_items").fetchall()
         return {str(row["file_id"]) for row in rows if row["file_id"]}
 
-    def touch_job_updated(self, job_id: str) -> None:
+    def lock_job_config(self, job_id: str) -> dict[str, Any]:
+        """Freeze the job config used by a submitted worker queue."""
         now = _utc_iso()
         with self._connect() as conn:
-            conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
+            row = conn.execute(
+                "SELECT config_json, locked_config_json FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            current_raw = row["config_json"] or "{}"
+            locked_raw = row["locked_config_json"]
+            if locked_raw:
+                if locked_raw != current_raw:
+                    raise ValueError("job config is already locked")
+                raw = locked_raw
+            else:
+                raw = current_raw
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET locked_config_json = ?, config_locked_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (raw, now, now, job_id),
+                )
+                conn.commit()
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def touch_job_updated(self, job_id: str, updated_by: str | None = None) -> None:
+        now = _utc_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET updated_at = ?, updated_by = COALESCE(?, updated_by, owner_id, 'local_user') WHERE id = ?",
+                (now, updated_by, job_id),
+            )
             conn.commit()
 
-    def update_job_draft(self, job_id: str, patch: dict[str, Any]) -> bool:
+    def update_job_draft(self, job_id: str, patch: dict[str, Any], updated_by: str | None = None) -> bool:
         """Update draft fields: title, config, skip_item_review."""
         job = self.get_job(job_id)
         if not job or job["status"] != JobStatus.DRAFT.value:
@@ -856,6 +945,8 @@ class JobStore(RepairMixin):
             return False
         sets.append("updated_at = ?")
         params.append(now)
+        sets.append("updated_by = ?")
+        params.append(str(updated_by or job.get("updated_by") or job.get("owner_id") or "local_user"))
         params.append(job_id)
         with self._connect() as conn:
             conn.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?", params)

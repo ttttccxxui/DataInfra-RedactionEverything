@@ -3,6 +3,7 @@
 import { ArrowLeftRight, ArrowRight, ChevronDown, ChevronRight, Download, Trash2 } from 'lucide-react';
 import { memo, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
+import { formatDateTime } from '@/lib/format-date';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -58,16 +59,7 @@ type HistoryDeliveryState = {
 };
 
 function formatCreatedAt(value?: string | null): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString(undefined, {
-    year: '2-digit',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatDateTime(value);
 }
 
 function getHistoryDeliveryState(
@@ -197,7 +189,7 @@ function buildHistoryReviewAction(
 const HISTORY_ACTION_ICON_BTN_BASE = 'size-7 rounded-lg shadow-none hover:translate-y-0';
 export const historyGridStyle: CSSProperties = {
   gridTemplateColumns:
-    '32px minmax(220px,1.5fr) minmax(150px,0.72fr) minmax(52px,0.28fr) minmax(152px,0.78fr) minmax(124px,0.62fr) minmax(72px,0.36fr) minmax(58px,0.3fr) minmax(58px,0.3fr) minmax(58px,0.3fr)',
+    '32px minmax(190px,1.28fr) minmax(132px,0.62fr) minmax(52px,0.24fr) minmax(138px,0.66fr) minmax(84px,0.38fr) minmax(118px,0.54fr) minmax(68px,0.31fr) minmax(56px,0.26fr) minmax(56px,0.26fr) minmax(56px,0.26fr)',
   columnGap: '10px',
 };
 
@@ -237,6 +229,8 @@ export const HistoryDataRow = memo(function HistoryDataRow({
 }: HistoryDataRowProps) {
   const deliveryState = getHistoryDeliveryState(row, t);
   const reviewAction = buildHistoryReviewAction(row, navLabels);
+  const rowUpdatedAt = row.updated_at || row.created_at;
+  const rowUpdatedBy = row.updated_by || row.created_by || '-';
   const actionIconBtnBase = cn(HISTORY_ACTION_ICON_BTN_BASE, density.rowHeight < 36 && 'size-6');
   const actionPlaceholder = (
     <span
@@ -329,11 +323,15 @@ export const HistoryDataRow = memo(function HistoryDataRow({
           </div>
         </div>
 
+        <div className="jobs-updated-by-cell hidden truncate text-caption text-muted-foreground md:block">
+          {rowUpdatedBy}
+        </div>
+
         <div
           className="jobs-updated-cell hidden text-caption text-muted-foreground tabular-nums whitespace-nowrap md:block"
-          title={row.created_at ? new Date(row.created_at).toLocaleString() : '-'}
+          title={formatCreatedAt(rowUpdatedAt)}
         >
-          {formatCreatedAt(row.created_at)}
+          {formatCreatedAt(rowUpdatedAt)}
         </div>
 
         <div className="jobs-action-cell">
@@ -433,11 +431,16 @@ export const HistoryBatchRow = memo(function HistoryBatchRow({
     const status = String(row.item_status ?? '').toLowerCase();
     return status === 'awaiting_review' || status === 'review_approved';
   }).length;
-  const latestCreatedAt = rows.reduce<string | null>((latest, row) => {
-    if (!row.created_at) return latest;
-    if (!latest) return row.created_at;
-    return new Date(row.created_at).getTime() > new Date(latest).getTime() ? row.created_at : latest;
+  const latestUpdatedRow = rows.reduce<FileListItem | null>((latest, row) => {
+    const currentValue = row.updated_at || row.created_at;
+    if (!currentValue) return latest;
+    if (!latest) return row;
+    const latestValue = latest.updated_at || latest.created_at;
+    if (!latestValue) return row;
+    return new Date(currentValue).getTime() > new Date(latestValue).getTime() ? row : latest;
   }, null);
+  const latestUpdatedAt = latestUpdatedRow?.updated_at || latestUpdatedRow?.created_at || null;
+  const latestUpdatedBy = latestUpdatedRow?.updated_by || latestUpdatedRow?.created_by || '-';
   const deliveryState =
     redactedCount === rows.length
       ? {
@@ -557,11 +560,15 @@ export const HistoryBatchRow = memo(function HistoryBatchRow({
           </Badge>
         </div>
 
+        <div className="jobs-updated-by-cell hidden truncate text-caption text-muted-foreground md:block">
+          {latestUpdatedBy}
+        </div>
+
         <div
           className="jobs-updated-cell hidden text-caption text-muted-foreground tabular-nums whitespace-nowrap md:block"
-          title={latestCreatedAt ? new Date(latestCreatedAt).toLocaleString() : '-'}
+          title={formatCreatedAt(latestUpdatedAt)}
         >
-          {formatCreatedAt(latestCreatedAt)}
+          {formatCreatedAt(latestUpdatedAt)}
         </div>
 
         <div className="jobs-action-cell">

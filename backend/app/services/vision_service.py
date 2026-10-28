@@ -814,6 +814,12 @@ class VisionService:
             logger.warning("LA vertical tighten skipped", exc_info=True)
             return all_boxes
 
+    # Normalized area at/above which a "paper" (纸质文档) box is treated as the
+    # page itself. On scans/uploads the whole image IS the sheet, so LA/YOLO
+    # "sheet of paper" boxes are near full-page and would redact everything.
+    # Scene photos of a document on a desk stay below this and are kept.
+    _PAPER_PAGE_COVER_AREA = 0.50
+
     @staticmethod
     def _drop_full_page_seals(boxes: list[BoundingBox]) -> list[BoundingBox]:
         """A visual box spanning the whole page is degenerate — drop it.
@@ -827,18 +833,36 @@ class VisionService:
         emits integer thousandths, so its last cell (0 or 0.999) IS the page
         border, not a tuned tolerance. Text boxes (words/lines) are never
         page-sized, so this is scoped to the visual channel.
+
+        Also drop page-covering ``paper`` (纸质文档) boxes even when slightly
+        inset from the edges: that class is a scene-container ("sheet of paper
+        in the photo"), and on a document page it paints a near-full-page mask
+        that redacts the whole sheet. Area ≥ ``_PAPER_PAGE_COVER_AREA`` is the
+        signal; small paper regions in desk photos are kept.
         """
         quantum = 1.0 / 1000.0  # LA emits coordinates as integer/1000
+        paper_cover = VisionService._PAPER_PAGE_COVER_AREA
         kept = []
         for b in boxes:
-            if (
-                b.source == "visual_features"
-                and b.x <= quantum and b.y <= quantum
-                and b.x + b.width >= 1.0 - quantum
-                and b.y + b.height >= 1.0 - quantum
-            ):
-                logger.info("Dropped a full-page %s box (degenerate)", b.type)
-                continue
+            if b.source == "visual_features":
+                if (
+                    b.x <= quantum and b.y <= quantum
+                    and b.x + b.width >= 1.0 - quantum
+                    and b.y + b.height >= 1.0 - quantum
+                ):
+                    logger.info("Dropped a full-page %s box (degenerate)", b.type)
+                    continue
+                if (
+                    b.type == "paper"
+                    and float(b.width) * float(b.height) >= paper_cover
+                ):
+                    logger.info(
+                        "Dropped a page-covering paper box "
+                        "(area=%.3f >= %.2f)",
+                        float(b.width) * float(b.height),
+                        paper_cover,
+                    )
+                    continue
             kept.append(b)
         return kept
 

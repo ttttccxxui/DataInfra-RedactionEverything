@@ -27,31 +27,36 @@ const DEFAULT_PRESET_VALUE = '__default__';
 
 export const PresetSelectors: FC<{
   rec: RecognitionCtx;
+  activeTab: 'text' | 'vision';
   disabledText: boolean;
   disabledVision: boolean;
-}> = ({ rec, disabledText, disabledVision }) => {
+}> = ({ rec, activeTab, disabledText, disabledVision }) => {
   const t = useT();
+  const isTextTab = activeTab === 'text';
 
   return (
     <div className="flex flex-col gap-2.5">
-      <PresetRow
-        label={t('playground.textPresetLabel')}
-        presets={rec.textPresetsPg}
-        activeId={rec.playgroundPresetTextId}
-        onSelect={rec.selectPlaygroundTextPresetById}
-        onSave={rec.openTextPresetDialog}
-        saveLabel={t('playground.saveAsTextPreset')}
-        disabled={disabledText}
-      />
-      <PresetRow
-        label={t('playground.visionPresetLabel')}
-        presets={rec.visionPresetsPg}
-        activeId={rec.playgroundPresetVisionId}
-        onSelect={rec.selectPlaygroundVisionPresetById}
-        onSave={rec.openVisionPresetDialog}
-        saveLabel={t('playground.saveAsVisionPreset')}
-        disabled={disabledVision}
-      />
+      {isTextTab ? (
+        <PresetRow
+          label={t('playground.textPresetLabel')}
+          presets={rec.textPresetsPg}
+          activeId={rec.playgroundPresetTextId}
+          onSelect={rec.selectPlaygroundTextPresetById}
+          onSave={rec.openTextPresetDialog}
+          saveLabel={t('playground.saveAsTextPreset')}
+          disabled={disabledText}
+        />
+      ) : (
+        <PresetRow
+          label={t('playground.visionPresetLabel')}
+          presets={rec.visionPresetsPg}
+          activeId={rec.playgroundPresetVisionId}
+          onSelect={rec.selectPlaygroundVisionPresetById}
+          onSave={rec.openVisionPresetDialog}
+          saveLabel={t('playground.saveAsVisionPreset')}
+          disabled={disabledVision}
+        />
+      )}
     </div>
   );
 };

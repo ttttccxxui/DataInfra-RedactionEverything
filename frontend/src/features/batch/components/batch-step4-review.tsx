@@ -1,6 +1,7 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
 import { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -325,12 +326,6 @@ export function BatchStep4Review() {
       className="page-surface flex min-h-0 flex-1 flex-col overflow-hidden border-border/70 shadow-[var(--shadow-control)]"
       data-testid="batch-step4-review"
     >
-      {reviewFileReadOnly && (
-        <div className={`shrink-0 border-b px-4 py-2 text-sm ${tonePanelClass.success}`}>
-          {t('batchWizard.step4.readOnlyHint')}
-        </div>
-      )}
-
       <div className="shrink-0 border-b bg-muted/30 px-3 py-2" data-testid="review-file-toolbar">
         <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
           <div className="min-w-0 flex-1">
@@ -521,12 +516,6 @@ export function BatchStep4Review() {
               )}
             </div>
           )}
-          <span
-            className="hidden shrink-0 whitespace-nowrap text-[11px] text-muted-foreground/70 lg:inline"
-            title={t('batchWizard.step4.keyboardHint')}
-          >
-            {t('batchWizard.step4.keyboardHint')}
-          </span>
           <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
             {t('batchWizard.step4.confirmed')} {reviewedOutputCount}/{rows.length}
           </span>
@@ -631,6 +620,7 @@ export function BatchStep4Review() {
             data-testid="go-export"
           >
             {t('batchWizard.step4.goExport')}
+            <ChevronRight className="size-4" />
           </Button>
         </div>
       </div>

@@ -1,6 +1,6 @@
 ﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
 
-import { memo, useMemo } from 'react';
+import { memo } from 'react';
 
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -34,8 +34,6 @@ export interface BatchStep1PresetCardsProps {
   imageRedactionStrength: number;
   imageFillColor: string;
   defaultTextSummary: string;
-  defaultVisionSummary: string;
-  defaultVisionExcludedSummary: string;
 }
 
 function BatchStep1PresetCardsInner({
@@ -55,40 +53,10 @@ function BatchStep1PresetCardsInner({
   imageRedactionStrength,
   imageFillColor,
   defaultTextSummary,
-  defaultVisionSummary,
-  defaultVisionExcludedSummary,
 }: BatchStep1PresetCardsProps) {
   const t = useT();
   const showTextConfig = mode !== 'image';
   const showVisionConfig = mode !== 'text';
-  const showIndustryConfig = mode === 'smart';
-  const industryPresets = useMemo(() => {
-    const byId = new Map<string, RecognitionPreset>();
-    [...textPresets, ...visionPresets].forEach((preset) => {
-      if (preset.readonly || preset.id.startsWith('industry_')) byId.set(preset.id, preset);
-    });
-    return [...byId.values()];
-  }, [textPresets, visionPresets]);
-  const activeIndustryPresetId =
-    industryPresets.find(
-      (preset) => preset.id === cfg.presetTextId || preset.id === cfg.presetVisionId,
-    )?.id ?? DEFAULT_PRESET_VALUE;
-
-  const onIndustryPresetChange = (value: string) => {
-    if (value === DEFAULT_PRESET_VALUE) {
-      onBatchTextPresetChange('');
-      onBatchVisionPresetChange('');
-      return;
-    }
-    const preset = industryPresets.find((item) => item.id === value);
-    if (!preset) return;
-    if ((preset.kind ?? 'full') === 'full') {
-      onBatchTextPresetChange(value);
-      return;
-    }
-    if (preset.kind === 'text') onBatchTextPresetChange(value);
-    if (preset.kind === 'vision') onBatchVisionPresetChange(value);
-  };
 
   const textModeBullets = [
     { key: 'structured', label: t('batchWizard.step1.textModeBulletStructured') },
@@ -98,45 +66,6 @@ function BatchStep1PresetCardsInner({
 
   return (
     <div className="flex shrink-0 flex-col gap-2">
-      {showIndustryConfig && industryPresets.length > 0 && (
-        <div className="shrink-0 rounded-xl border border-border/70 !bg-white px-2.5 py-2">
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] sm:items-center">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--success)]" />
-                <span className="truncate text-sm font-semibold">
-                  {t('batchWizard.step1.industryPreset')}
-                </span>
-              </div>
-              <p className="mt-0.5 text-xs leading-tight text-muted-foreground">
-                {t('batchWizard.step1.industryPresetDesc')}
-              </p>
-            </div>
-            <Select
-              disabled={disabled}
-              value={activeIndustryPresetId}
-              onValueChange={onIndustryPresetChange}
-            >
-              <SelectTrigger className="text-xs" data-testid="industry-preset-select">
-                <SelectValue placeholder={t('batchWizard.step1.industryPresetPlaceholder')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={DEFAULT_PRESET_VALUE}>
-                  {t('batchWizard.step1.industryPresetPlaceholder')}
-                </SelectItem>
-                {industryPresets.map((preset) => (
-                  <SelectItem key={preset.id} value={preset.id}>
-                    {preset.name}
-                    {(preset.kind ?? 'full') === 'full'
-                      ? ` (${t('batchWizard.step1.comboPreset')})`
-                      : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      )}
       <div
         className={cn(
           'grid shrink-0 gap-2',
@@ -155,9 +84,6 @@ function BatchStep1PresetCardsInner({
                   {t('batchWizard.step1.textPreset')}
                 </span>
               </div>
-              <p className="text-xs leading-tight text-muted-foreground">
-                {t('batchWizard.step1.textPresetDesc')}
-              </p>
               <Select
                 disabled={disabled}
                 value={cfg.presetTextId || DEFAULT_PRESET_VALUE}
@@ -245,9 +171,6 @@ function BatchStep1PresetCardsInner({
                   {t('batchWizard.step1.imagePreset')}
                 </span>
               </div>
-              <p className="text-xs leading-tight text-muted-foreground">
-                {t('batchWizard.step1.imagePresetDesc')}
-              </p>
               <Select
                 disabled={disabled}
                 value={cfg.presetVisionId || DEFAULT_PRESET_VALUE}
@@ -270,14 +193,6 @@ function BatchStep1PresetCardsInner({
                   ))}
                 </SelectContent>
               </Select>
-              {!cfg.presetVisionId && (
-                <div className="rounded-lg border border-border/70 !bg-white px-2.5 py-1.5 text-[11px] leading-4 text-muted-foreground">
-                  <p>{defaultVisionSummary}</p>
-                  {defaultVisionExcludedSummary ? (
-                    <p className="mt-1 text-[var(--warning-foreground)]">{defaultVisionExcludedSummary}</p>
-                  ) : null}
-                </div>
-              )}
               <div className="flex flex-col gap-1 rounded-xl border border-border/70 !bg-white px-2.5 py-1.5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="truncate text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">

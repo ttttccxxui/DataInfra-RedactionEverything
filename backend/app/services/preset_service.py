@@ -48,6 +48,10 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _actor(owner_id: str | None) -> str:
+    return str(owner_id or "local_user")
+
+
 def _preset_store_path(owner_id: str | None = None) -> str:
     return tenant_store_path(owner_id, settings.PRESET_STORE_PATH, "presets.json")
 
@@ -187,7 +191,9 @@ def _to_out(preset: dict[str, Any]) -> PresetOut:
         linkageGroups=preset.get("linkageGroups") or [],
         replacementMode=preset.get("replacementMode") or "structured",
         created_at=preset.get("created_at") or _now_iso(),
+        created_by=preset.get("created_by") or ("system" if preset.get("readonly") else None),
         updated_at=preset.get("updated_at") or _now_iso(),
+        updated_by=preset.get("updated_by") or ("system" if preset.get("readonly") else None),
         readonly=bool(preset.get("readonly")),
     )
 
@@ -199,9 +205,10 @@ def _to_out_or_none(preset: dict[str, Any]) -> PresetOut | None:
         return None
 
 
-def _import_item_to_row(preset: PresetImportItem) -> dict[str, Any]:
+def _import_item_to_row(preset: PresetImportItem, owner_id: str | None) -> dict[str, Any]:
     ts = _now_iso()
     created_at = preset.created_at or ts
+    actor = _actor(owner_id)
     return {
         "id": preset.id,
         "name": preset.name.strip(),
@@ -214,7 +221,9 @@ def _import_item_to_row(preset: PresetImportItem) -> dict[str, Any]:
         "linkageGroups": preset.linkageGroups,
         "replacementMode": preset.replacementMode,
         "created_at": created_at,
+        "created_by": preset.created_by or actor,
         "updated_at": preset.updated_at or created_at,
+        "updated_by": preset.updated_by or actor,
     }
 
 
@@ -241,6 +250,7 @@ def create(payload: PresetCreate, owner_id: str | None = None) -> PresetOut:
     with store_lock(_preset_store_path(owner_id)):
         presets = _load_store(owner_id)
         ts = _now_iso()
+        actor = _actor(owner_id)
         row = {
             "id": str(uuid.uuid4()),
             "name": payload.name.strip(),
@@ -253,7 +263,9 @@ def create(payload: PresetCreate, owner_id: str | None = None) -> PresetOut:
             "linkageGroups": payload.linkageGroups,
             "replacementMode": payload.replacementMode,
             "created_at": ts,
+            "created_by": actor,
             "updated_at": ts,
+            "updated_by": actor,
         }
         presets.append(row)
         _save_store(presets, owner_id)
@@ -293,6 +305,7 @@ def update(
             if patch.replacementMode is not None:
                 preset["replacementMode"] = patch.replacementMode
             preset["updated_at"] = _now_iso()
+            preset["updated_by"] = _actor(owner_id)
             presets[index] = preset
             _save_store(presets, owner_id)
             return _to_out(preset)
@@ -327,7 +340,7 @@ def import_presets(request: PresetImportRequest, owner_id: str | None = None) ->
 
     builtin_ids = _builtin_ids()
     incoming = [
-        _import_item_to_row(preset)
+        _import_item_to_row(preset, owner_id)
         for preset in request.presets
         if preset.id not in builtin_ids
     ]

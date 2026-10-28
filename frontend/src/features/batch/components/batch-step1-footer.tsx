@@ -1,8 +1,8 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
 import { memo } from 'react';
+import { ChevronRight } from 'lucide-react';
 
-import { Link } from 'react-router-dom';
 import { useT } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -44,6 +44,7 @@ function BatchStep1FooterInner({
             data-testid="advance-upload"
           >
             {t('batchWizard.step1.nextUpload')}
+            <ChevronRight className="size-4" />
           </Button>
           {configLocked ? (
             <p className="text-xs leading-snug text-muted-foreground xl:max-w-40">
@@ -51,16 +52,6 @@ function BatchStep1FooterInner({
             </p>
           ) : null}
       </div>
-
-      <p className="mt-1 text-[11px] leading-tight text-muted-foreground">
-        <Link to="/jobs" className="text-primary hover:underline font-medium">
-          {t('batchHub.jobCenter')}
-        </Link>
-        <span className="mx-1">&middot;</span>
-        <Link to="/history" className="text-primary hover:underline font-medium">
-          {t('batchHub.history')}
-        </Link>
-      </p>
     </div>
   );
 }

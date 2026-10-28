@@ -17,6 +17,7 @@ __all__ = [
     "PasswordRequest",
     "UserCreateRequest",
     "UserPermissionsRequest",
+    "UserRoleRequest",
     "UserStatusRequest",
     "ApiKeyCreateRequest",
     "ImportInboxRequest",
@@ -114,6 +115,7 @@ class ReplacementMode(str, Enum):
     MASK = "mask"        # 掩码替换 (***)
     CUSTOM = "custom"    # 自定义替换
     STRUCTURED = "structured"  # 结构化语义标签
+    STANDARD = "standard"  # 标准替换
 
 
 # ============ 通用响应 ============
@@ -159,6 +161,10 @@ class UserCreateRequest(BaseModel):
 
 class UserPermissionsRequest(BaseModel):
     bulk_confirm: bool
+
+
+class UserRoleRequest(BaseModel):
+    role: str = "user"
 
 
 class UserStatusRequest(BaseModel):

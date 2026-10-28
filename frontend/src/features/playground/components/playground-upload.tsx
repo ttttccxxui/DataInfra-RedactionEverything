@@ -111,21 +111,21 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
               <TabsList className="h-8 shrink-0 rounded-full border border-border/70 bg-muted/35 p-1">
                 <TabsTrigger
                   value="text"
-                  className="whitespace-nowrap rounded-full px-3 py-1 text-xs"
+                  className="group whitespace-nowrap rounded-full px-3 py-1 text-xs"
                   data-testid="playground-tab-text"
                 >
                   {t('playground.text')}
-                  <span className="ml-1 tabular-nums text-[10px] text-muted-foreground">
+                  <span className="ml-1 tabular-nums text-[10px] text-muted-foreground group-data-[state=active]:text-primary-foreground">
                     {rec.entityTypes.length}
                   </span>
                 </TabsTrigger>
                 <TabsTrigger
                   value="vision"
-                  className="whitespace-nowrap rounded-full px-3 py-1 text-xs"
+                  className="group whitespace-nowrap rounded-full px-3 py-1 text-xs"
                   data-testid="playground-tab-vision"
                 >
                   {t('playground.vision')}
-                  <span className="ml-1 tabular-nums text-[10px] text-muted-foreground">
+                  <span className="ml-1 tabular-nums text-[10px] text-muted-foreground group-data-[state=active]:text-primary-foreground">
                     {rec.visionTypes.length}
                   </span>
                 </TabsTrigger>
@@ -133,6 +133,7 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
             </div>
             <PresetSelectors
               rec={rec}
+              activeTab={rec.typeTab}
               disabledText={rec.textConfigState !== 'ready'}
               disabledVision={rec.visionConfigState !== 'ready'}
             />

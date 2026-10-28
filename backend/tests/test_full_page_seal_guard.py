@@ -45,3 +45,22 @@ def test_full_page_text_box_untouched():
     b = BoundingBox(id="b", x=0.0, y=0.0, width=0.999, height=0.999,
                     type="INSTITUTION_NAME", page=1, source="ocr_has")
     assert VisionService._drop_full_page_seals([b]) == [b]
+
+
+def test_inset_page_covering_paper_dropped():
+    # LA "sheet of paper" on a scan is slightly inset but still covers the page —
+    # the edge-quantum guard alone would miss it; area gate must catch it.
+    b = BoundingBox(
+        id="p", x=0.02, y=0.03, width=0.95, height=0.94,
+        type="paper", page=1, source="visual_features",
+    )
+    assert VisionService._drop_full_page_seals([b]) == []
+
+
+def test_small_scene_paper_kept():
+    # Desk photo: a real document region well under half the frame stays.
+    b = BoundingBox(
+        id="p", x=0.20, y=0.25, width=0.40, height=0.35,
+        type="paper", page=1, source="visual_features",
+    )
+    assert VisionService._drop_full_page_seals([b]) == [b]

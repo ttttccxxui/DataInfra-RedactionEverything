@@ -1,13 +1,27 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
 import { useEffect, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/format-date';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { PaginationRail } from '@/components/PaginationRail';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { getSelectionToneClasses, type SelectionTone } from '@/ui/selectionPalette';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import {
   getPipelineTone,
   getToneColor,
@@ -24,10 +38,12 @@ import {
   samplesFromType,
   type PipelineTypeForm,
 } from './pipeline-type-form';
-import { PipelineTypeCard } from './pipeline-type-card';
 import { PipelineTypeDialog } from './pipeline-type-dialog';
+import { SettingsListPagination } from './settings-list-pagination';
 
-const RECOGNITION_PAGE_SIZE = 9;
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+type TypeFilter = 'all' | 'builtin' | 'custom';
 
 type SettingsPipelineTab = Extract<PipelineMode, 'ocr_has' | 'visual_features'>;
 type DisplayPipelineType = PipelineTypeConfig & { pipelineMode: PipelineMode };
@@ -39,6 +55,7 @@ type DisplayPipeline = Omit<PipelineConfig, 'mode' | 'types'> & {
 interface PipelineConfigPanelProps {
   loading: boolean;
   pipelines: PipelineConfig[];
+  fixedMode?: SettingsPipelineTab;
   onCreateType: (
     mode: PipelineMode,
     name: string,
@@ -65,21 +82,23 @@ interface PipelineConfigPanelProps {
 export function PipelineConfigPanel({
   loading,
   pipelines,
+  fixedMode,
   onCreateType,
   onUpdateType,
   onDeleteType,
-  onReset,
 }: PipelineConfigPanelProps) {
   const t = useT();
-  const [activeSub, setActiveSub] = useState<SettingsPipelineTab>('ocr_has');
+  const activeSub = fixedMode ?? 'ocr_has';
   const [dialogMode, setDialogMode] = useState<PipelineMode | null>(null);
   const [editing, setEditing] = useState<{ mode: string; type: PipelineTypeConfig } | null>(null);
   const [form, setForm] = useState<PipelineTypeForm>(() => emptyForm());
+  const [keyword, setKeyword] = useState('');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const ocrPipeline = pipelines.find((pipeline) => pipeline.mode === 'ocr_has');
   const visualPipeline = pipelines.find((pipeline) => pipeline.mode === 'visual_features');
-  const ocrLabel = t('settings.pipelineDisplayName.ocr');
   const imageLabel = t('settings.pipelineDisplayName.image');
   const ocrDisplayPipeline = useMemo<DisplayPipeline | undefined>(() => {
     if (!ocrPipeline) return undefined;
@@ -106,7 +125,7 @@ export function PipelineConfigPanel({
   const activePipeline = activeSub === 'visual_features' ? visualDisplayPipeline : ocrDisplayPipeline;
 
   const openCreate = (mode: PipelineMode) => {
-    setEditing(null);
+    setEditing(null);
     setForm(emptyForm());
     setDialogMode(mode);
   };
@@ -128,10 +147,9 @@ export function PipelineConfigPanel({
     if (!dialogMode || !form.name.trim()) return;
 
     const useVisualChecklist = dialogMode === 'visual_features';
-    const positiveRows =
-      useVisualChecklist
-        ? form.positivePrompts
-        : form.rulesText.split('\n').map((line) => emptyPromptRow(line));
+    const positiveRows = useVisualChecklist
+      ? form.positivePrompts
+      : form.rulesText.split('\n').map((line) => emptyPromptRow(line));
     const checklist = positiveRows
       .map((item) => item.text.trim())
       .filter(Boolean)
@@ -184,17 +202,27 @@ export function PipelineConfigPanel({
     setForm(emptyForm());
   };
 
-  const imageModeActive = activeSub === 'visual_features';
-  const tone: SelectionTone = imageModeActive ? 'visual' : 'semantic';
-  const toneClasses = getSelectionToneClasses(tone);
-  const displayName = imageModeActive ? imageLabel : ocrLabel;
-  const activeCount = activePipeline?.types.length ?? 0;
-  const totalPages = Math.max(1, Math.ceil(activeCount / RECOGNITION_PAGE_SIZE));
+  const filteredTypes = useMemo(() => {
+    const query = keyword.trim().toLowerCase();
+    const source = activePipeline?.types ?? [];
+    return source.filter((type) => {
+      const systemManaged = isSystemPipelineType(type);
+      const matchesType =
+        typeFilter === 'all' ||
+        (typeFilter === 'builtin' && systemManaged) ||
+        (typeFilter === 'custom' && !systemManaged);
+      if (!matchesType) return false;
+      if (!query) return true;
+      return type.name.toLowerCase().includes(query);
+    });
+  }, [activePipeline, keyword, typeFilter]);
+  const activeCount = filteredTypes.length;
+  const totalPages = Math.max(1, Math.ceil(activeCount / pageSize));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting pagination when active tab changes
     setPage(1);
-  }, [activeSub]);
+  }, [activeSub, keyword, pageSize, typeFilter]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- clamping page to valid range when total changes
@@ -202,111 +230,177 @@ export function PipelineConfigPanel({
   }, [totalPages]);
 
   const visibleTypes = useMemo(() => {
-    if (!activePipeline) return [];
-    const start = (page - 1) * RECOGNITION_PAGE_SIZE;
-    return activePipeline.types.slice(start, start + RECOGNITION_PAGE_SIZE);
-  }, [activePipeline, page]);
+    const start = (page - 1) * pageSize;
+    return filteredTypes.slice(start, start + pageSize);
+  }, [filteredTypes, page, pageSize]);
+
+  const handlePageSizeChange = (nextSize: number) => {
+    setPageSize(nextSize);
+    setPage(1);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2">
-        <Tabs value={activeSub} onValueChange={(value) => setActiveSub(value as SettingsPipelineTab)}>
-          <TabsList className="rounded-xl border border-border/70 bg-muted/40 p-1">
-            <TabsTrigger
-              value="ocr_has"
-              className="whitespace-nowrap"
-              data-testid="pipeline-tab-ocr"
-            >
-              {ocrLabel}
-              <span className="ml-1 text-muted-foreground">({ocrPipeline?.types.length ?? 0})</span>
-            </TabsTrigger>
-            <TabsTrigger
-              value="visual_features"
-              className="whitespace-nowrap"
-              data-testid="pipeline-tab-image"
-            >
-              {imageLabel}
-              <span className="ml-1 text-muted-foreground">
-                ({visualDisplayPipeline?.types.length ?? 0})
-              </span>
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
-
       <div
-        className="page-surface rounded-[20px] border border-border/70 bg-card shadow-[var(--shadow-control)]"
+        className="overflow-hidden rounded-xl border border-border/70 bg-card shadow-[var(--shadow-control)]"
         data-testid="vision-pipeline-panel"
       >
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/70 bg-muted/20 px-4 py-2.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className={cn('size-2 shrink-0 rounded-full', toneClasses.dot)} />
-            <span className="truncate text-sm font-semibold tracking-normal">{displayName}</span>
-            <Badge
-              variant="secondary"
-              className={cn(
-                'border border-border/70 bg-background text-xs shadow-sm',
-                toneClasses.badgeText,
-              )}
-            >
-              {activeCount}
-            </Badge>
+        <div className="flex flex-col gap-3 border-b border-border/70 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-1 flex-col gap-3 sm:flex-row">
+            <div className="relative w-full sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+                placeholder="搜索名称"
+                className="h-9 w-full rounded-[var(--radius-md)] border border-input bg-[var(--surface-control)] pl-9 pr-3 text-sm outline-none transition-colors focus:border-primary focus:ring-4 focus:ring-ring"
+                data-testid={`search-pipeline-${activeSub}`}
+              />
+            </div>
+            <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
+              <SelectTrigger className="h-9 w-full sm:w-36" data-testid={`type-filter-${activeSub}`}>
+                <SelectValue placeholder="全部类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部类型</SelectItem>
+                <SelectItem value="builtin">内置</SelectItem>
+                <SelectItem value="custom">自定义</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 justify-end">
             <Button
               size="sm"
-              variant="outline"
-              className="h-8 whitespace-nowrap"
-              onClick={onReset}
-              data-testid="reset-pipelines"
-            >
-              {t('settings.resetVisionRules')}
-            </Button>
-            <Button
-              size="sm"
-              className="h-8 whitespace-nowrap"
+              className="h-9 whitespace-nowrap px-4"
               onClick={() => openCreate(activeSub)}
               data-testid="add-pipeline-type"
             >
-              {t('settings.addNew')}
+              + 新建识别项
             </Button>
           </div>
         </div>
 
-        <div className="page-surface-body flex overflow-hidden p-3">
+        <div className="min-h-0 w-full overflow-hidden bg-card">
           {loading ? (
-            <div className="flex min-h-[240px] flex-1 items-center justify-center rounded-[20px] border border-dashed border-border/70 bg-muted/15 px-6 text-center">
-              <p className="text-sm text-muted-foreground">{t('settings.loadingPipeline')}</p>
-            </div>
-          ) : !activePipeline || activePipeline.types.length === 0 ? (
-            <div className="flex min-h-[240px] flex-1 items-center justify-center rounded-[20px] border border-dashed border-border/70 bg-muted/15 px-6 text-center">
-              <p className="text-sm text-muted-foreground">{t('settings.noTypeConfig')}</p>
+            <div className="flex min-h-[240px] flex-1 items-center justify-center px-6 text-center">
+              <p className="text-sm text-muted-foreground">加载中...</p>
             </div>
           ) : (
-            <div className="grid h-full min-h-0 w-full flex-1 grid-cols-1 grid-rows-3 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {visibleTypes.map((type) => (
-                <PipelineTypeCard
-                  key={`${type.pipelineMode}-${type.id}`}
-                  type={type}
-                  onEdit={() => openEdit(type.pipelineMode, type)}
-                  onDelete={() => onDeleteType(type.pipelineMode, type.id)}
-                />
-              ))}
-            </div>
+            <Table>
+              <TableHeader className="bg-muted/35">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-16 whitespace-nowrap px-4 text-center">
+                    {t('settings.table.index')}
+                  </TableHead>
+                  <TableHead className="w-[18%] min-w-36 whitespace-nowrap px-4 text-left">
+                    识别项名称
+                  </TableHead>
+                  <TableHead className="min-w-[22rem] px-4 text-left">
+                    {t('settings.table.description')}
+                  </TableHead>
+                  <TableHead className="w-28 whitespace-nowrap px-4 text-center">
+                    类型
+                  </TableHead>
+                  <TableHead className="w-32 whitespace-nowrap px-4 text-center">
+                    {t('settings.table.updatedBy')}
+                  </TableHead>
+                  <TableHead className="w-44 whitespace-nowrap px-4 text-center">
+                    {t('settings.table.updatedAt')}
+                  </TableHead>
+                  <TableHead className="w-40 whitespace-nowrap px-4 text-center">
+                    {t('settings.table.actions')}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleTypes.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                      暂无数据
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  visibleTypes.map((type, index) => {
+                    const rowNumber = (page - 1) * pageSize + index + 1;
+
+                    return (
+                      <TableRow key={`${type.pipelineMode}-${type.id}`} className="bg-card/50">
+                        <TableCell className="px-4 text-center font-medium text-muted-foreground tabular-nums">
+                          {rowNumber}
+                        </TableCell>
+                        <TableCell className="px-4 text-left font-semibold text-foreground">
+                          <span className="block truncate" title={type.name}>
+                            {type.name}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-4 text-left text-foreground">
+                          <span className="line-clamp-2 leading-6">
+                            {type.description || t('settings.table.emptyValue')}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-4 text-center">
+                          <Badge
+                            variant="secondary"
+                            className={cn(
+                              'font-medium',
+                              isSystemPipelineType(type)
+                                ? 'bg-amber-100 text-amber-700'
+                                : 'bg-primary/10 text-primary',
+                            )}
+                          >
+                            {isSystemPipelineType(type) ? '内置' : '自定义'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="px-4 text-center text-foreground">
+                          {getUpdatedBy(type)}
+                        </TableCell>
+                        <TableCell className="px-4 text-center text-foreground tabular-nums">
+                          {formatAuditDate(getUpdatedAt(type))}
+                        </TableCell>
+                        <TableCell className="px-4 text-center">
+                          <div className="flex justify-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="link"
+                              className="h-auto whitespace-nowrap px-0"
+                              onClick={() => openEdit(type.pipelineMode, type)}
+                              aria-label={t('common.edit')}
+                              data-testid={`edit-pipeline-${type.id}`}
+                            >
+                              {t('common.edit')}
+                            </Button>
+                            <span className="text-border">·</span>
+                            <Button
+                              size="sm"
+                              variant="link"
+                              className="h-auto whitespace-nowrap px-0 text-destructive"
+                              onClick={() => onDeleteType(type.pipelineMode, type.id)}
+                              aria-label={t('common.delete')}
+                              data-testid={`delete-pipeline-${type.id}`}
+                            >
+                              {t('common.delete')}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
           )}
         </div>
 
         {activeCount > 0 && (
-          <div className="page-surface-footer">
-            <PaginationRail
-              page={page}
-              pageSize={RECOGNITION_PAGE_SIZE}
-              totalItems={activeCount}
-              totalPages={totalPages}
-              onPageChange={setPage}
-              compact
-            />
-          </div>
+          <SettingsListPagination
+            page={page}
+            pageSize={pageSize}
+            total={activeCount}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageChange={setPage}
+            onPageSizeChange={handlePageSizeChange}
+            testIdPrefix={`pipeline-${activeSub}`}
+          />
         )}
       </div>
 
@@ -323,4 +417,26 @@ export function PipelineConfigPanel({
       />
     </div>
   );
+}
+
+function getUpdatedBy(type: PipelineTypeConfig) {
+  return (
+    type.updated_by?.trim() ||
+    type.updatedBy?.trim() ||
+    type.created_by?.trim() ||
+    type.createdBy?.trim() ||
+    '-'
+  );
+}
+
+function getUpdatedAt(type: PipelineTypeConfig) {
+  return type.updated_at || type.updatedAt || type.created_at || type.createdAt || null;
+}
+
+function isSystemPipelineType(type: PipelineTypeConfig) {
+  return !type.id.startsWith('custom_') && !type.created_by && !type.createdBy;
+}
+
+function formatAuditDate(value?: string | null) {
+  return formatDateTime(value);
 }

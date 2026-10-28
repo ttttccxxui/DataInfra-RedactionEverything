@@ -141,7 +141,9 @@ class PresetOut(PresetPayload):
                     "visualFeatureTypes": ["official_seal", "qr_code"],
                     "replacementMode": "structured",
                     "created_at": "2026-05-05T00:00:00+00:00",
+                    "created_by": "system",
                     "updated_at": "2026-05-05T00:00:00+00:00",
+                    "updated_by": "system",
                     "readonly": True,
                 }
             ]
@@ -156,10 +158,12 @@ class PresetOut(PresetPayload):
         description="ISO timestamp when the preset was created.",
         examples=["2026-05-05T00:00:00+00:00"],
     )
+    created_by: str | None = Field(default=None, description="User that created the preset.")
     updated_at: str = Field(
         description="ISO timestamp when the preset was last updated.",
         examples=["2026-05-05T00:00:00+00:00"],
     )
+    updated_by: str | None = Field(default=None, description="User that last updated the preset.")
     readonly: bool = Field(
         default=False,
         description=(
@@ -185,7 +189,9 @@ class PresetsListResponse(BaseModel):
                             "visualFeatureTypes": ["official_seal", "qr_code"],
                             "replacementMode": "structured",
                             "created_at": "2026-05-05T00:00:00+00:00",
+                            "created_by": "system",
                             "updated_at": "2026-05-05T00:00:00+00:00",
+                            "updated_by": "system",
                             "readonly": True,
                         }
                     ],
@@ -229,6 +235,8 @@ class PresetImportItem(PresetPayload):
         description="Optional original update timestamp. The server fills this when omitted.",
         examples=["2026-05-05T00:00:00+00:00"],
     )
+    created_by: str | None = Field(default=None, description="Optional original creator.")
+    updated_by: str | None = Field(default=None, description="Optional original updater.")
     readonly: bool = Field(
         default=False,
         description="Ignored on import for user presets; built-in read-only presets remain protected by id.",
@@ -245,5 +253,4 @@ class PresetImportRequest(BaseModel):
         description="True merges new user presets with existing ones; false replaces the user preset store.",
         examples=[False],
     )
-
 

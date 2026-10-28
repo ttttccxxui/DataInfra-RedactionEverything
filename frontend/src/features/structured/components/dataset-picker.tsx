@@ -6,6 +6,7 @@ import { CheckCircle2, TableProperties } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { formatDateTime } from '@/lib/format-date';
 import { cn } from '@/lib/utils';
 import { useT } from '@/i18n';
 import type { StructuredConnection, StructuredDataset } from '@/services/structuredApi';
@@ -16,7 +17,17 @@ import {
   datasetIdentityContextText,
   isSameDatasetReviewScope,
 } from '../lib/dataset-utils';
-import { DatasetIdentity, EmptyState, ListPager } from './shared';
+import {
+  DatasetIdentity,
+  EmptyState,
+  ListPager,
+  STRUCTURED_DEFAULT_PAGE_SIZE,
+  STRUCTURED_LIST_PAGE_SIZE_OPTIONS,
+} from './shared';
+
+function formatDatasetMetaTime(value?: string | null): string {
+  return formatDateTime(value);
+}
 
 export function DatasetPickerCard({
   datasets,
@@ -38,6 +49,7 @@ export function DatasetPickerCard({
   const t = useT();
   const [query, setQuery] = React.useState('');
   const [page, setPage] = React.useState(0);
+  const [pageSize, setPageSize] = React.useState(STRUCTURED_DEFAULT_PAGE_SIZE);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredDatasets = React.useMemo(
     () =>
@@ -58,7 +70,6 @@ export function DatasetPickerCard({
     () => buildDatasetIdentityContexts(orderedDatasets, connections ?? []),
     [connections, orderedDatasets],
   );
-  const pageSize = compact ? 3 : 8;
   const orderedDatasetIds = React.useMemo(() => orderedDatasets.map((dataset) => dataset.id).join('|'), [orderedDatasets]);
   const pageCount = Math.max(1, Math.ceil(orderedDatasets.length / pageSize));
   const safePage = Math.min(page, pageCount - 1);
@@ -99,7 +110,7 @@ export function DatasetPickerCard({
 
   React.useEffect(() => {
     setPage(0);
-  }, [orderedDatasetIds]);
+  }, [orderedDatasetIds, pageSize]);
 
   React.useEffect(() => {
     if (!selectedDatasetId) return;
@@ -145,7 +156,7 @@ export function DatasetPickerCard({
           placeholder={t('structured.picker.searchPlaceholder')}
           className="h-9"
         />
-        <div className="grid content-start gap-2 overflow-hidden pr-1">
+        <div className="grid content-start gap-2 overflow-auto pr-1">
           {filteredDatasets.length === 0 ? (
             <EmptyState icon={TableProperties} text={t('structured.common.noDatasets')} />
           ) : (
@@ -167,7 +178,17 @@ export function DatasetPickerCard({
                     selected && 'border-foreground bg-muted/45',
                   )}
                 >
-                  <DatasetIdentity dataset={dataset} compact identityContext={identityContextById.get(dataset.id)} />
+                  <span className="min-w-0">
+                    <DatasetIdentity
+                      dataset={dataset}
+                      compact
+                      identityContext={identityContextById.get(dataset.id)}
+                    />
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                      {dataset.updated_by || dataset.created_by || '-'} ·{' '}
+                      {formatDatasetMetaTime(dataset.updated_at || dataset.created_at)}
+                    </span>
+                  </span>
                   <span className="flex shrink-0 flex-col items-end gap-1">
                     <CheckCircle2
                       className={cn(
@@ -204,6 +225,8 @@ export function DatasetPickerCard({
             pageSize={pageSize}
             visibleCount={visibleDatasets.length}
             onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={STRUCTURED_LIST_PAGE_SIZE_OPTIONS}
           />
         ) : (
           <div className="min-h-0" />

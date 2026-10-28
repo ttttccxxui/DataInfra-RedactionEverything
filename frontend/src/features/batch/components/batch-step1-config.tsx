@@ -5,7 +5,6 @@ import { memo, useEffect, useState } from 'react';
 import { useT } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { buildDefaultPipelineCoverage } from '@/services/defaultRedactionPreset';
 
 import { useBatchWizardContext } from '../batch-wizard-context';
 import type { PreviewGroup } from './batch-step1-preview';
@@ -55,61 +54,16 @@ function BatchStep1ConfigInner() {
   const visionPresetName =
     visionPresets.find((preset) => preset.id === cfg.presetVisionId)?.name ??
     t('batchWizard.step1.defaultPreset');
-  const selectedRegexLabels = textTypes
-    .filter((type) => cfg.selectedEntityTypeIds.includes(type.id) && Boolean(type.regex_pattern))
-    .map((type) => type.name);
-  const selectedSemanticLabels = textTypes
-    .filter((type) => cfg.selectedEntityTypeIds.includes(type.id) && !type.regex_pattern)
-    .map((type) => type.name);
   const ocrTypes = pipelines
     .filter((pipeline) => pipeline.mode === 'ocr_has')
     .flatMap((pipeline) => pipeline.types);
   const visualFeatureTypes = pipelines
     .filter((pipeline) => pipeline.mode === 'visual_features')
     .flatMap((pipeline) => pipeline.types);
-  const selectedOcrLabels = ocrTypes
-    .filter((type) => cfg.ocrHasTypes.includes(type.id))
-    .map((type) => type.name);
-  const selectedVisualFeatureLabels = visualFeatureTypes
-    .filter((type) => (cfg.visualFeatureTypes ?? []).includes(type.id))
-    .map((type) => type.name);
-  const defaultOcrCoverage = buildDefaultPipelineCoverage(pipelines, 'ocr_has');
-  const defaultVisualFeatureCoverage = buildDefaultPipelineCoverage(pipelines, 'visual_features');
-  const pipelineNameById = new Map(
-    [...ocrTypes, ...visualFeatureTypes].map((type) => [type.id, type.name] as const),
-  );
-  const defaultVisionExcludedLabels = [
-    ...defaultOcrCoverage.excludedIds,
-    ...defaultVisualFeatureCoverage.excludedIds,
-  ]
-    .map((id) => pipelineNameById.get(id) ?? id)
-    .slice(0, 6);
   const defaultTextSummary = t('batchWizard.step1.defaultTextCoverage').replace(
     '{count}',
     String(cfg.selectedEntityTypeIds.length),
   );
-  const defaultVisionSummary = t('batchWizard.step1.defaultVisionCoverage')
-    .replace(
-      '{selected}',
-      String(
-        defaultOcrCoverage.selectedIds.length +
-          defaultVisualFeatureCoverage.selectedIds.length,
-      ),
-    )
-    .replace(
-      '{excluded}',
-      String(
-        defaultOcrCoverage.excludedIds.length +
-          defaultVisualFeatureCoverage.excludedIds.length,
-      ),
-    );
-  const defaultVisionExcludedSummary =
-    defaultVisionExcludedLabels.length > 0
-      ? t('batchWizard.step1.defaultVisionExcluded').replace(
-          '{labels}',
-          defaultVisionExcludedLabels.join(', '),
-        )
-      : '';
   const textModeLabel =
     textRedactionMode === 'smart'
       ? t('batchWizard.step1.textMethodSmart')
@@ -140,26 +94,80 @@ function BatchStep1ConfigInner() {
         ];
   const textPreviewGroups: PreviewGroup[] = [
     {
-      title: t('batchWizard.step1.fixedTextRange'),
-      items: selectedRegexLabels,
+      title: t('batchWizard.step1.contextTextRange'),
+      items: textTypes
+        .filter((type) => !type.regex_pattern)
+        .map((type) => ({
+          id: type.id,
+          name: type.name,
+          selected: cfg.selectedEntityTypeIds.includes(type.id),
+        })),
       emptyLabel: t('batchWizard.step1.noTextSelection'),
+      onToggle: (id, selected) =>
+        setCfg((current) => ({
+          ...current,
+          presetTextId: null,
+          selectedEntityTypeIds: selected
+            ? Array.from(new Set([...current.selectedEntityTypeIds, id]))
+            : current.selectedEntityTypeIds.filter((itemId) => itemId !== id),
+        })),
     },
     {
-      title: t('batchWizard.step1.contextTextRange'),
-      items: selectedSemanticLabels,
+      title: t('batchWizard.step1.fixedTextRange'),
+      items: textTypes
+        .filter((type) => Boolean(type.regex_pattern))
+        .map((type) => ({
+          id: type.id,
+          name: type.name,
+          selected: cfg.selectedEntityTypeIds.includes(type.id),
+        })),
       emptyLabel: t('batchWizard.step1.noTextSelection'),
+      onToggle: (id, selected) =>
+        setCfg((current) => ({
+          ...current,
+          presetTextId: null,
+          selectedEntityTypeIds: selected
+            ? Array.from(new Set([...current.selectedEntityTypeIds, id]))
+            : current.selectedEntityTypeIds.filter((itemId) => itemId !== id),
+        })),
     },
   ];
   const imagePreviewGroups: PreviewGroup[] = [
     {
       title: t('batchWizard.step1.ocrTypes'),
-      items: selectedOcrLabels,
+      items: ocrTypes.map((type) => ({
+        id: type.id,
+        name: type.name,
+        selected: cfg.ocrHasTypes.includes(type.id),
+        disabled: !type.enabled,
+      })),
       emptyLabel: t('batchWizard.step1.noVisionSelection'),
+      onToggle: (id, selected) =>
+        setCfg((current) => ({
+          ...current,
+          presetVisionId: null,
+          ocrHasTypes: selected
+            ? Array.from(new Set([...current.ocrHasTypes, id]))
+            : current.ocrHasTypes.filter((itemId) => itemId !== id),
+        })),
     },
     {
       title: t('batchWizard.step1.visualFeatureTypes'),
-      items: selectedVisualFeatureLabels,
+      items: visualFeatureTypes.map((type) => ({
+        id: type.id,
+        name: type.name,
+        selected: (cfg.visualFeatureTypes ?? []).includes(type.id),
+        disabled: !type.enabled,
+      })),
       emptyLabel: t('batchWizard.step1.noVisionSelection'),
+      onToggle: (id, selected) =>
+        setCfg((current) => ({
+          ...current,
+          presetVisionId: null,
+          visualFeatureTypes: selected
+            ? Array.from(new Set([...(current.visualFeatureTypes ?? []), id]))
+            : (current.visualFeatureTypes ?? []).filter((itemId) => itemId !== id),
+        })),
     },
   ];
 
@@ -178,20 +186,13 @@ function BatchStep1ConfigInner() {
 
   return (
     <Card
-      className="page-surface flex-1 rounded-[24px] border-border/70 shadow-[var(--shadow-control)]"
+      className="batch-step1-config-card page-surface flex-1 overflow-hidden rounded-[24px] border-border/70 shadow-[var(--shadow-control)]"
       data-testid="batch-step1-config"
     >
       <CardHeader className="flex shrink-0 flex-col gap-0.5 border-b border-border/70 px-3 pb-2 pt-2.5">
         <CardTitle className="text-base tracking-[-0.03em]">
           {t('batchWizard.step1.title')}
         </CardTitle>
-        <p className="text-sm leading-tight text-muted-foreground">{t('batchWizard.step1.desc')}</p>
-        <p
-          className="truncate text-xs text-muted-foreground"
-          data-testid="batch-step1-single-file-hint"
-        >
-          {t('batchHub.noActiveJobsDesc')}
-        </p>
         {jobConfigLocked && (
           <p className="text-xs font-medium text-[var(--warning-foreground)]" data-testid="step1-config-locked">
             {t('batchWizard.step1.lockedHint')}
@@ -239,11 +240,9 @@ function BatchStep1ConfigInner() {
           imageRedactionStrength={imageRedactionStrength}
           imageFillColor={imageFillColor}
           defaultTextSummary={defaultTextSummary}
-          defaultVisionSummary={defaultVisionSummary}
-          defaultVisionExcludedSummary={defaultVisionExcludedSummary}
         />
 
-        <div className="shrink-0">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <BatchStep1PreviewCards
             mode={mode}
             textPreviewGroups={textPreviewGroups}
@@ -254,6 +253,7 @@ function BatchStep1ConfigInner() {
             imageDetailPills={imageDetailPills}
             previewDialog={previewDialog}
             setPreviewDialog={setPreviewDialog}
+            disabled={jobConfigLocked}
           />
         </div>
       </CardContent>

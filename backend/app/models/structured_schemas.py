@@ -57,6 +57,9 @@ class StructuredSourceOut(BaseModel):
     status: str = "ready"
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
 
 
 class StructuredDatasetOut(BaseModel):
@@ -76,6 +79,9 @@ class StructuredDatasetOut(BaseModel):
     columns_schema: list[dict[str, Any]] = Field(default_factory=list, alias="schema")
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
     profile_updated_at: str | None = None
     policy_updated_at: str | None = None
     policy_reviewed_at: str | None = None
@@ -119,7 +125,9 @@ class StructuredConnectionOut(BaseModel):
     last_tested_at: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
+    created_by: str | None = None
     updated_at: str
+    updated_by: str | None = None
 
 
 class StructuredColumnProfile(BaseModel):
@@ -142,6 +150,8 @@ class StructuredProfileResponse(BaseModel):
     sampled_rows: int = 0
     columns: list[StructuredColumnProfile] = Field(default_factory=list)
     semantic_inference: dict[str, Any] = Field(default_factory=dict)
+    updated_at: str | None = None
+    updated_by: str | None = None
 
 
 class StructuredColumnPolicy(BaseModel):
@@ -160,6 +170,7 @@ class StructuredPolicyResponse(BaseModel):
     dataset_id: str
     columns: list[StructuredColumnPolicy] = Field(default_factory=list)
     updated_at: str | None = None
+    updated_by: str | None = None
 
 
 class StructuredPreviewResponse(BaseModel):

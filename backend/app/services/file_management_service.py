@@ -98,6 +98,21 @@ def file_owner_id(info: dict | None) -> str:
     return str(info.get("owner_id") or "local_user")
 
 
+def _metadata_actor(info: dict | None = None, actor: str | None = None) -> str:
+    if actor:
+        return str(actor)
+    if isinstance(info, dict):
+        return str(info.get("updated_by") or info.get("created_by") or info.get("owner_id") or "local_user")
+    return "local_user"
+
+
+def _touch_metadata(info: dict, actor: str | None = None, *, timestamp: str | None = None) -> dict:
+    next_info = dict(info)
+    next_info["updated_at"] = timestamp or datetime.now(UTC).isoformat()
+    next_info["updated_by"] = _metadata_actor(info, actor)
+    return next_info
+
+
 def assert_file_owner(file_id: str, owner_id: str | None) -> dict:
     info = file_store.get(file_id)
     if not info or (owner_id and file_owner_id(info) != owner_id):
@@ -280,8 +295,20 @@ _OUTPUT_ARTIFACT_FIELDS = (
     "redacted_count",
 )
 
+_RECOGNITION_ARTIFACT_FIELDS = (
+    "entities",
+    "bounding_boxes",
+    "vision_quality",
+    "vision_detection_signature",
+)
 
-def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
+
+def clear_file_output(
+    file_id: str,
+    *,
+    delete_disk: bool = True,
+    clear_recognition: bool = False,
+) -> bool:
     """Remove stale redacted-output signals for a file.
 
     Returns True when file_store metadata changed. Disk deletion is best-effort
@@ -294,12 +321,16 @@ def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
     next_info = dict(info)
     output_path = next_info.get("output_path")
     changed = False
-    for key in _OUTPUT_ARTIFACT_FIELDS:
+    stale_fields = _OUTPUT_ARTIFACT_FIELDS
+    if clear_recognition:
+        stale_fields = (*_OUTPUT_ARTIFACT_FIELDS, *_RECOGNITION_ARTIFACT_FIELDS)
+    for key in stale_fields:
         if key in next_info:
             next_info.pop(key, None)
             changed = True
 
     if changed:
+        next_info = _touch_metadata(next_info)
         file_store.set(file_id, next_info)
 
     if delete_disk and isinstance(output_path, str) and output_path.strip():
@@ -516,6 +547,9 @@ async def process_upload(
         "file_type": ft,
         "file_size": file_size,
         "created_at": created_at.isoformat(),
+        "created_by": owner_id or "local_user",
+        "updated_at": created_at.isoformat(),
+        "updated_by": owner_id or "local_user",
         "upload_source": eff_source,
         "owner_id": owner_id or "local_user",
     }
@@ -556,7 +590,7 @@ def register_file_with_job(job_id: str, file_id: str, owner_id: str | None = Non
     n = len(store.list_items(job_id))
     item_id = store.add_item(job_id, file_id, sort_order=n)
     try:
-        store.touch_job_updated(job_id)
+        store.touch_job_updated(job_id, updated_by=owner_id)
     except Exception:
         store.delete_item(item_id)
         raise
@@ -826,7 +860,7 @@ async def import_inbox_files(
     return {"imported": imported, "failed": failed}
 
 
-async def soft_delete_file(file_id: str) -> dict[str, Any] | None:
+async def soft_delete_file(file_id: str, updated_by: str | None = None) -> dict[str, Any] | None:
     """软删除（R1-4 回收站）：只打 deleted_at 标记，磁盘文件保留。
 
     过期由 retention 扫描调用 delete_file 真删（TRASH_RETENTION_DAYS）。
@@ -836,19 +870,20 @@ async def soft_delete_file(file_id: str) -> dict[str, Any] | None:
         file_info = file_store.get(file_id)
         if not file_info or file_info.get("deleted_at"):
             return None
-        info = dict(file_info)
-        info["deleted_at"] = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC).isoformat()
+        info = _touch_metadata(dict(file_info), updated_by, timestamp=now)
+        info["deleted_at"] = now
         file_store.set(file_id, info)
         return info
 
 
-async def restore_file(file_id: str) -> dict[str, Any] | None:
+async def restore_file(file_id: str, updated_by: str | None = None) -> dict[str, Any] | None:
     """从回收站还原：去掉 deleted_at 标记。"""
     async with _file_store_lock:
         file_info = file_store.get(file_id)
         if not file_info or not file_info.get("deleted_at"):
             return None
-        info = dict(file_info)
+        info = _touch_metadata(dict(file_info), updated_by)
         info.pop("deleted_at", None)
         file_store.set(file_id, info)
         return info
@@ -866,6 +901,44 @@ async def list_trashed_files(owner_id: str | None = None) -> list[dict[str, Any]
         rows = [r for r in rows if r.get("owner_id") == owner_id]
     rows.sort(key=lambda r: str(r.get("deleted_at") or ""), reverse=True)
     return rows
+
+
+def _purgeable_output_paths(snapshot: dict[str, Any]) -> list[str]:
+    """Collect all generated output files for a file record, deduplicated by real path."""
+    candidates: list[Any] = [snapshot.get("output_path")]
+
+    def _collect_products(container: Any) -> None:
+        if not isinstance(container, dict):
+            return
+        for product in container.values():
+            if isinstance(product, dict):
+                candidates.append(product.get("output_path"))
+
+    _collect_products(snapshot.get("products"))
+    history = snapshot.get("redaction_history")
+    for entry in history if isinstance(history, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        candidates.append(entry.get("output_path"))
+        _collect_products(entry.get("products"))
+
+    for field in ("docx_exports", "text_layer_exports"):
+        exports = snapshot.get(field)
+        for entry in exports if isinstance(exports, list) else []:
+            if isinstance(entry, dict):
+                candidates.append(entry.get("output_path"))
+
+    ordered: dict[str, str] = {}
+    for raw in candidates:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        path = raw.strip()
+        try:
+            key = os.path.realpath(path)
+        except OSError:
+            key = path
+        ordered.setdefault(key, path)
+    return list(ordered.values())
 
 
 async def delete_file(file_id: str) -> dict[str, Any] | None:

@@ -27,6 +27,7 @@ from app.core.auth import (
     set_password,
     set_user_bulk_confirm,
     set_user_disabled,
+    set_user_role,
     user_can_bulk_confirm,
     validate_password_strength,
 )
@@ -43,12 +44,17 @@ from app.models.schemas import (
     TokenResponse,
     UserCreateRequest,
     UserPermissionsRequest,
+    UserRoleRequest,
     UserStatusRequest,
 )
 
 router = APIRouter(tags=["auth"])
 
 _auth_limiter = RateLimiter(max_requests=5, window_seconds=60)
+
+
+def _self_registration_enabled() -> bool:
+    return bool(getattr(settings, "SELF_REGISTRATION_ENABLED", False))
 
 
 async def _check_auth_rate_limit(request: Request) -> None:
@@ -89,8 +95,7 @@ def _build_token_response(token: str) -> JSONResponse:
     return response
 
 
-@router.get("/auth/status", response_model=AuthStatusResponse)
-async def auth_status(subject: str | None = Depends(get_optional_subject)):
+def build_auth_status(subject: str | None) -> dict:
     user = get_user(subject) if subject else None
     role = (user or {}).get("role")
     can_bulk_confirm = (not settings.AUTH_ENABLED) or user_can_bulk_confirm(subject)
@@ -103,7 +108,13 @@ async def auth_status(subject: str | None = Depends(get_optional_subject)):
         "is_super_admin": role == "super_admin",
         "can_bulk_confirm": can_bulk_confirm,
         "multi_user": True,
+        "self_registration_enabled": _self_registration_enabled(),
     }
+
+
+@router.get("/auth/status", response_model=AuthStatusResponse)
+async def auth_status(subject: str | None = Depends(get_optional_subject)):
+    return build_auth_status(subject)
 
 
 @router.post("/auth/setup", response_model=TokenResponse, dependencies=[Depends(_check_auth_rate_limit)])
@@ -114,7 +125,7 @@ async def setup_password(req: PasswordRequest):
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
     subject = normalize_username(req.username, default="local_user")
-    set_password(req.password, username=subject)
+    set_password(req.password, username=subject, actor=subject)
     token = create_token(subject)
     return _build_token_response(token)
 
@@ -199,7 +210,7 @@ async def register(req: PasswordRequest):
     errors = validate_password_strength(req.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    subject = create_user(req.username, req.password, role="user")
+    subject = create_user(req.username, req.password, role="user", actor=req.username)
     token = create_token(subject)
     return _build_token_response(token)
 
@@ -216,19 +227,27 @@ async def change_password(req: ChangePasswordRequest, subject: str = Depends(req
     errors = validate_password_strength(req.new_password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    set_password(req.new_password, username=subject, invalidate_existing_tokens=True)
+    set_password(req.new_password, username=subject, invalidate_existing_tokens=True, actor=subject)
     token = create_token(subject)
     return _build_token_response(token)
 
 
 @router.post("/auth/users", response_model=dict)
-async def create_auth_user(req: UserCreateRequest, _: str = Depends(require_super_admin)):
+async def create_auth_user(req: UserCreateRequest, actor: str = Depends(require_super_admin)):
     errors = validate_password_strength(req.password)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    subject = create_user(req.username, req.password, role=req.role)
+    subject = create_user(req.username, req.password, role=req.role, actor=actor)
     user = get_user(subject) or {}
-    return {"username": subject, "role": user.get("role") or "user"}
+    audit_log("create", "user_account", subject, user=actor, detail={"role": user.get("role") or "user"})
+    return {
+        "username": subject,
+        "role": user.get("role") or "user",
+        "created_at": user.get("created_at"),
+        "created_by": user.get("created_by"),
+        "updated_at": user.get("updated_at"),
+        "updated_by": user.get("updated_by"),
+    }
 
 
 @router.get("/auth/users", response_model=list[dict])
@@ -240,16 +259,35 @@ async def list_auth_users(_: str = Depends(require_super_admin)):
 async def update_user_permissions(
     username: str,
     req: UserPermissionsRequest,
-    _: str = Depends(require_super_admin),
+    actor: str = Depends(require_super_admin),
 ):
     subject = normalize_username(username)
-    set_user_bulk_confirm(subject, req.bulk_confirm)
+    set_user_bulk_confirm(subject, req.bulk_confirm, actor=actor)
     user = get_user(subject) or {}
     return {
         "username": subject,
         "role": user.get("role") or "user",
         "can_bulk_confirm": user_can_bulk_confirm(subject),
+        "updated_at": user.get("updated_at"),
+        "updated_by": user.get("updated_by"),
     }
+
+
+@router.put("/auth/users/{username}/role", response_model=dict)
+async def update_user_role(
+    username: str,
+    req: UserRoleRequest,
+    actor: str = Depends(require_super_admin),
+):
+    result = set_user_role(actor, username, req.role)
+    audit_log(
+        "update_role",
+        "user_account",
+        result["username"],
+        user=actor,
+        detail={"role": result.get("role")},
+    )
+    return result
 
 
 @router.put("/auth/users/{username}/status", response_model=dict)

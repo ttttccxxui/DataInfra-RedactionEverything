@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useT } from '@/i18n';
+import { formatDateTime } from '@/lib/format-date';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -24,8 +25,13 @@ const presetPreviewChipClass =
 const presetPreviewChipGridClass = 'grid grid-cols-3 gap-1.5 xl:grid-cols-4 2xl:grid-cols-5';
 const presetRowLeftClass = 'grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-2';
 const presetRowNameClass = 'min-w-0 truncate font-medium';
+const presetMetaLineClass = 'mt-0.5 truncate text-[11px] text-muted-foreground';
 const presetMetaPlaceholderClass = 'h-6 w-[4.5rem]';
 type PresetPreviewScope = 'text' | 'vision';
+
+function formatPresetDate(value?: string | null): string {
+  return formatDateTime(value);
+}
 
 export function PresetColumn({
   title,
@@ -64,9 +70,15 @@ export function PresetColumn({
         <li className="bg-muted/30">
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
             <div className={presetRowLeftClass}>
-              <span className={presetRowNameClass} title={defaultPresetName}>
-                {defaultPresetName}
-              </span>
+              <div className="min-w-0">
+                <span className={presetRowNameClass} title={defaultPresetName}>
+                  {defaultPresetName}
+                </span>
+                <div className={presetMetaLineClass}>
+                  {defaultPreset.updated_by || defaultPreset.created_by || 'system'} ·{' '}
+                  {formatPresetDate(defaultPreset.updated_at || defaultPreset.created_at)}
+                </div>
+              </div>
               <Badge variant="secondary" className={presetMetaPillClass}>
                 {t('settings.redaction.systemDefault')}
               </Badge>
@@ -100,9 +112,15 @@ export function PresetColumn({
             <li key={preset.id} className="bg-muted/30">
               <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
                 <div className={presetRowLeftClass}>
-                  <span className={presetRowNameClass} title={presetName}>
-                    {presetName}
-                  </span>
+                  <div className="min-w-0">
+                    <span className={presetRowNameClass} title={presetName}>
+                      {presetName}
+                    </span>
+                    <div className={presetMetaLineClass}>
+                      {preset.updated_by || preset.created_by || '-'} ·{' '}
+                      {formatPresetDate(preset.updated_at || preset.created_at)}
+                    </div>
+                  </div>
                   {preset.readonly && (
                     <Badge variant="secondary" className={presetMetaPillClass}>
                       {t('settings.redaction.systemDefault')}

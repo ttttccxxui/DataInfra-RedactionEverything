@@ -11,6 +11,7 @@ The application exposes two runtime pipelines:
 from __future__ import annotations
 
 import os as _os
+from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -83,6 +84,10 @@ class PipelineTypeConfig(BaseModel):
         default_factory=list,
         description="Few-shot visual feature samples",
     )
+    created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
 
 
 class PipelineConfig(BaseModel):
@@ -142,6 +147,14 @@ VISUAL_FEATURES_DEFAULT_IDS = {
     # (one prompt per selected category).
     "official_seal", "signature",
 }
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _actor(owner_id: str | None) -> str:
+    return str(owner_id or "local_user")
 
 
 def _validate_pipeline_type_for_mode(_mode: str, _type_config: PipelineTypeConfig) -> str:
@@ -294,6 +307,10 @@ def _custom_semantic_ocr_has_types(owner_id: str | None) -> list[PipelineTypeCon
                 default_enabled=False,
                 enabled=True,
                 order=9000,
+                created_at=getattr(et, "created_at", None),
+                created_by=getattr(et, "created_by", None),
+                updated_at=getattr(et, "updated_at", None),
+                updated_by=getattr(et, "updated_by", None),
             )
         )
     return out
@@ -384,6 +401,16 @@ def add_pipeline_type(
     type_config = _canonicalize_pipeline_type_for_mode(mode, type_config)
     if type_config.id in [item.id for item in db[mode].types]:
         return None, "Type ID already exists"
+    now = _now_iso()
+    actor = _actor(owner_id)
+    type_config = type_config.model_copy(
+        update={
+            "created_at": type_config.created_at or now,
+            "created_by": type_config.created_by or actor,
+            "updated_at": now,
+            "updated_by": actor,
+        }
+    )
     db[mode].types.append(type_config)
     if owner_id is None:
         pipelines_db = db
@@ -412,7 +439,15 @@ def update_pipeline_type(
     for index, current in enumerate(pipeline.types):
         if current.id != type_id:
             continue
-        pipeline.types[index] = next_config.model_copy(update={"id": type_id})
+        pipeline.types[index] = next_config.model_copy(
+            update={
+                "id": type_id,
+                "created_at": current.created_at,
+                "created_by": current.created_by,
+                "updated_at": _now_iso(),
+                "updated_by": _actor(owner_id),
+            }
+        )
         if owner_id is None:
             pipelines_db = db
         _persist_pipelines(db, owner_id)

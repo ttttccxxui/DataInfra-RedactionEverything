@@ -1,16 +1,35 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
 import { useEffect, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { formatDateTime } from '@/lib/format-date';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { PaginationRail } from '@/components/PaginationRail';
-import { getSelectionToneClasses, type SelectionTone } from '@/ui/selectionPalette';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { getEntityTypeName } from '@/config/entityTypes';
 import type { EntityTypeConfig } from '../hooks/use-entity-types';
+import { SettingsListPagination } from './settings-list-pagination';
 
-const RECOGNITION_PAGE_SIZE = 9;
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+type TypeFilter = 'all' | 'builtin' | 'custom';
+type TextScopeFilter = 'all' | 'semantic' | 'fallback';
 
 interface EntityTypeListProps {
   types: EntityTypeConfig[];
@@ -27,23 +46,42 @@ export function EntityTypeList({
   onEdit,
   onDelete,
   onAdd,
-  onReset,
   variant,
   compact = false,
 }: EntityTypeListProps) {
   const t = useT();
   const isRegex = variant === 'regex';
-  const tone: SelectionTone = isRegex ? 'regex' : 'semantic';
-  const toneClasses = getSelectionToneClasses(tone);
-  const panelTitle = isRegex ? t('settings.customFallbackRules') : t('settings.hasTextRules');
-  const addLabel = t('settings.addNew');
+  const [keyword, setKeyword] = useState('');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [textScopeFilter, setTextScopeFilter] = useState<TextScopeFilter>('all');
   const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(types.length / RECOGNITION_PAGE_SIZE));
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const filteredTypes = useMemo(() => {
+    const query = keyword.trim().toLowerCase();
+    return types.filter((type) => {
+      const matchesTextScope =
+        variant !== 'llm' ||
+        textScopeFilter === 'all' ||
+        (textScopeFilter === 'semantic' && !isFallbackEntityType(type)) ||
+        (textScopeFilter === 'fallback' && isFallbackEntityType(type));
+      if (!matchesTextScope) return false;
+      const systemManaged = isSystemEntityType(type);
+      const matchesType =
+        typeFilter === 'all' ||
+        (typeFilter === 'builtin' && systemManaged) ||
+        (typeFilter === 'custom' && !systemManaged);
+      if (!matchesType) return false;
+      if (!query) return true;
+      const name = getEntityDisplayName(type);
+      return name.toLowerCase().includes(query);
+    });
+  }, [keyword, textScopeFilter, typeFilter, types, variant]);
+  const totalPages = Math.max(1, Math.ceil(filteredTypes.length / pageSize));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting pagination when variant changes
     setPage(1);
-  }, [variant]);
+  }, [keyword, pageSize, textScopeFilter, typeFilter, variant]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- clamping page to valid range when total changes
@@ -51,9 +89,14 @@ export function EntityTypeList({
   }, [totalPages]);
 
   const visibleTypes = useMemo(() => {
-    const start = (page - 1) * RECOGNITION_PAGE_SIZE;
-    return types.slice(start, start + RECOGNITION_PAGE_SIZE);
-  }, [page, types]);
+    const start = (page - 1) * pageSize;
+    return filteredTypes.slice(start, start + pageSize);
+  }, [filteredTypes, page, pageSize]);
+
+  const handlePageSizeChange = (nextSize: number) => {
+    setPageSize(nextSize);
+    setPage(1);
+  };
 
   return (
     <div
@@ -63,172 +106,242 @@ export function EntityTypeList({
       )}
       data-testid={`entity-type-list-${variant}`}
     >
-      <div className="page-surface w-full rounded-[20px] border border-border/70 bg-card shadow-[var(--shadow-control)]">
-        <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/70 bg-muted/20 px-4 py-2.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className={cn('size-2 shrink-0 rounded-full', toneClasses.dot)} />
-            <span className="truncate text-sm font-semibold tracking-normal">{panelTitle}</span>
-            <Badge
-              variant="secondary"
-              className={cn(
-                'border border-border/70 bg-background text-xs shadow-sm',
-                toneClasses.badgeText,
-              )}
-            >
-              {types.length}
-            </Badge>
+      <div className="overflow-hidden rounded-xl border border-border/70 bg-card shadow-[var(--shadow-control)]">
+        <div className="flex flex-col gap-3 border-b border-border/70 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-1 flex-col gap-3 sm:flex-row">
+            <div className="relative w-full sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+                placeholder="搜索名称"
+                className="h-9 w-full rounded-[var(--radius-md)] border border-input bg-[var(--surface-control)] pl-9 pr-3 text-sm outline-none transition-colors focus:border-primary focus:ring-4 focus:ring-ring"
+                data-testid={`search-${variant}-types`}
+              />
+            </div>
+            {variant === 'llm' && (
+              <Select
+                value={textScopeFilter}
+                onValueChange={(value) => setTextScopeFilter(value as TextScopeFilter)}
+              >
+                <SelectTrigger
+                  className="h-9 w-full sm:w-40"
+                  data-testid={`category-filter-${variant}`}
+                >
+                  <SelectValue placeholder="全部类别" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部类别</SelectItem>
+                  <SelectItem value="semantic">语义标签</SelectItem>
+                  <SelectItem value="fallback">正则兜底</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
+              <SelectTrigger className="h-9 w-full sm:w-36" data-testid={`type-filter-${variant}`}>
+                <SelectValue placeholder="全部类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部类型</SelectItem>
+                <SelectItem value="builtin">内置</SelectItem>
+                <SelectItem value="custom">自定义</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 justify-end">
             <Button
               size="sm"
-              variant="outline"
-              className="h-8 whitespace-nowrap"
-              onClick={onReset}
-              data-testid={`reset-${variant}-types`}
-            >
-              {t('settings.resetTextRules')}
-            </Button>
-            <Button
-              size="sm"
-              className="h-8 whitespace-nowrap"
+              className="h-9 whitespace-nowrap px-4"
               onClick={onAdd}
               data-testid={`add-${variant}-type`}
             >
-              {addLabel}
+              + 新建识别项
             </Button>
           </div>
         </div>
 
-        <div className={cn('page-surface-body flex overflow-hidden', compact ? 'p-2.5' : 'p-3')}>
-          {types.length === 0 ? (
-            <div
-              className={cn(
-                'flex flex-1 items-center justify-center rounded-[20px] border border-dashed border-border/70 bg-muted/15 px-6 text-center',
-                compact ? 'min-h-[64px]' : 'min-h-[240px]',
-              )}
-            >
-              <p className="text-sm leading-6 text-muted-foreground">
-                {isRegex ? t('settings.redaction.regexEmptyInline') : t('settings.noTypeConfig')}
-              </p>
-            </div>
-          ) : (
-            <div
-              className={cn(
-                'grid w-full gap-3',
-                compact
-                  ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 xl:grid-rows-3'
-                  : 'h-full min-h-0 flex-1 grid-cols-1 grid-rows-3 sm:grid-cols-2 xl:grid-cols-3',
-              )}
-            >
-              {visibleTypes.map((type) => {
-                const systemManaged = !type.id.startsWith('custom_');
-                return (
-                  <article
-                    key={type.id}
-                    className={cn(
-                      'flex overflow-hidden rounded-[20px] border border-border/70 bg-[var(--surface-control)] px-3.5 py-3.5 shadow-[var(--shadow-sm)] transition-colors hover:border-border',
-                      compact ? 'h-[112px]' : 'h-full min-h-0',
-                    )}
-                  >
-                  <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <span className="line-clamp-2 text-sm font-semibold leading-5 text-foreground">
-                          {systemManaged ? getEntityTypeName(type.id) : type.name}
-                        </span>
-                        {systemManaged && (
-                          <span className="mt-1 inline-flex rounded-md border border-border/70 bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground">
-                            {t('settings.entityList.systemManaged')}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-0.5">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="size-6"
-                          disabled={systemManaged}
-                          onClick={() => onEdit(type)}
-                          aria-label={t('common.edit')}
-                          data-testid={`edit-type-${type.id}`}
-                        >
-                          <PencilIcon />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="size-6 text-destructive hover:text-destructive"
-                          disabled={systemManaged}
-                          onClick={() => onDelete(type.id)}
-                          aria-label={t('common.delete')}
-                          data-testid={`delete-type-${type.id}`}
-                        >
-                          <TrashIcon />
-                        </Button>
-                      </div>
-                    </div>
+        <div className="min-h-0 w-full overflow-hidden bg-card">
+          <Table>
+            <TableHeader className="bg-muted/35">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-16 whitespace-nowrap px-4 text-center">
+                  {t('settings.table.index')}
+                </TableHead>
+                <TableHead className="w-32 min-w-28 whitespace-nowrap px-4 text-left">
+                  识别项名称
+                </TableHead>
+                <TableHead className="min-w-[34rem] px-4 text-left">
+                  {t('settings.table.description')}
+                </TableHead>
+                <TableHead className="w-36 whitespace-nowrap px-4 text-center">
+                  类别
+                </TableHead>
+                <TableHead className="w-28 whitespace-nowrap px-4 text-center">
+                  类型
+                </TableHead>
+                <TableHead className="w-32 whitespace-nowrap px-4 text-center">
+                  {t('settings.table.updatedBy')}
+                </TableHead>
+                <TableHead className="w-44 whitespace-nowrap px-4 text-center">
+                  {t('settings.table.updatedAt')}
+                </TableHead>
+                <TableHead className="w-40 whitespace-nowrap px-4 text-center">
+                  {t('settings.table.actions')}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visibleTypes.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                    暂无数据
+                  </TableCell>
+                </TableRow>
+              ) : (
+                visibleTypes.map((type, index) => {
+                  const systemManaged = isSystemEntityType(type);
+                  const rowNumber = (page - 1) * pageSize + index + 1;
+                  const name = systemManaged ? getEntityTypeName(type.id) : type.name;
 
-                    <div className="min-h-0 flex-1 rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        {isRegex ? t('settings.matchExpression') : t('settings.cardDescriptionLabel')}
-                      </p>
-                      {isRegex ? (
-                        <code className="mt-1 block line-clamp-3 break-all text-xs leading-4 text-foreground">
-                          {type.regex_pattern ?? '-'}
-                        </code>
-                      ) : (
-                        <p className="mt-1 line-clamp-4 text-xs leading-4 text-foreground">
-                          {type.description || t('settings.semanticDescriptionPlaceholder')}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
+                  return (
+                    <TableRow key={type.id} className="bg-card/50">
+                      <TableCell className="px-4 text-center font-medium text-muted-foreground tabular-nums">
+                        {rowNumber}
+                      </TableCell>
+                      <TableCell className="px-4 text-left font-semibold text-foreground">
+                        <span className="block truncate" title={name}>
+                          {name}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 text-left text-foreground">
+                        <span className="line-clamp-2 leading-6">
+                          {getEntityDescription(type, isRegex, t)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 text-center">
+                        <Badge
+                          variant="secondary"
+                          className={cn('font-medium', textCategoryBadgeClass(type))}
+                        >
+                          {getTextCategoryLabel(type)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="px-4 text-center">
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            'font-medium',
+                            systemManaged
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-primary/10 text-primary',
+                          )}
+                        >
+                          {systemManaged ? '内置' : '自定义'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="px-4 text-center text-foreground">
+                        {getUpdatedBy(type)}
+                      </TableCell>
+                      <TableCell className="px-4 text-center text-foreground tabular-nums">
+                        {formatAuditDate(getUpdatedAt(type))}
+                      </TableCell>
+                      <TableCell className="px-4 text-center">
+                        <div className="flex justify-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="link"
+                            className="h-auto whitespace-nowrap px-0"
+                            disabled={systemManaged}
+                            onClick={() => onEdit(type)}
+                            aria-label={t('common.edit')}
+                            data-testid={`edit-type-${type.id}`}
+                          >
+                            {t('common.edit')}
+                          </Button>
+                          <span className="text-border">·</span>
+                          <Button
+                            size="sm"
+                            variant="link"
+                            className="h-auto whitespace-nowrap px-0 text-destructive"
+                            disabled={systemManaged}
+                            onClick={() => onDelete(type.id)}
+                            aria-label={t('common.delete')}
+                            data-testid={`delete-type-${type.id}`}
+                          >
+                            {t('common.delete')}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
         </div>
 
-        {types.length > 0 && (
-          <div className="page-surface-footer">
-            <PaginationRail
-              page={page}
-              pageSize={RECOGNITION_PAGE_SIZE}
-              totalItems={types.length}
-              totalPages={totalPages}
-              onPageChange={setPage}
-              compact
-            />
-          </div>
+        {filteredTypes.length > 0 && (
+          <SettingsListPagination
+            page={page}
+            pageSize={pageSize}
+            total={filteredTypes.length}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageChange={setPage}
+            onPageSizeChange={handlePageSizeChange}
+            testIdPrefix={`entity-${variant}`}
+          />
         )}
       </div>
     </div>
   );
 }
 
-function PencilIcon() {
+function getEntityDescription(
+  type: EntityTypeConfig,
+  isRegex: boolean,
+  t: (key: string) => string,
+) {
+  if (type.description?.trim()) return type.description;
+  if (isRegex && type.regex_pattern?.trim()) return type.regex_pattern;
+  return t('settings.table.emptyValue');
+}
+
+function getEntityDisplayName(type: EntityTypeConfig) {
+  return type.id.startsWith('custom_') ? type.name : getEntityTypeName(type.id);
+}
+
+function isSystemEntityType(type: EntityTypeConfig) {
+  return !type.id.startsWith('custom_');
+}
+
+function isFallbackEntityType(type: EntityTypeConfig) {
+  return Boolean(type.regex_pattern?.trim());
+}
+
+function getTextCategoryLabel(type: EntityTypeConfig) {
+  return isFallbackEntityType(type) ? '正则兜底' : '语义标签';
+}
+
+function textCategoryBadgeClass(type: EntityTypeConfig) {
+  return isFallbackEntityType(type)
+    ? 'bg-violet-100 text-violet-700'
+    : 'bg-primary/10 text-primary';
+}
+
+function getUpdatedBy(type: EntityTypeConfig) {
   return (
-    <svg className="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-      />
-    </svg>
+    type.updated_by?.trim() ||
+    type.updatedBy?.trim() ||
+    type.created_by?.trim() ||
+    type.createdBy?.trim() ||
+    '-'
   );
 }
 
-function TrashIcon() {
-  return (
-    <svg className="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-      />
-    </svg>
-  );
+function getUpdatedAt(type: EntityTypeConfig) {
+  return type.updated_at || type.updatedAt || type.created_at || type.createdAt || null;
+}
+
+function formatAuditDate(value?: string | null) {
+  return formatDateTime(value);
 }

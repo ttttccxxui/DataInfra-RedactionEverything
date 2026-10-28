@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { t } from '@/i18n';
 import { notifyDone, phaseJustFinished } from '@/lib/notifications';
-import { type BatchRow, type Step } from '../types';
+import { RECOGNITION_DONE_STATUSES, type BatchRow, type Step } from '../types';
 
 /**
  * 阶段完成通知（W2-2）：识别全部完成 / 成品全部生成的活跃数 >0 → 0 翻转通知。
@@ -16,6 +16,14 @@ export function useBatchPhaseNotifications(rows: BatchRow[], step: Step, isPrevi
     () =>
       rows.filter((row) => row.analyzeStatus === 'analyzing' || row.analyzeStatus === 'pending')
         .length,
+    [rows],
+  );
+  const recognitionReadyCount = useMemo(
+    () => rows.filter((row) => RECOGNITION_DONE_STATUSES.has(row.analyzeStatus)).length,
+    [rows],
+  );
+  const recognitionFailedCount = useMemo(
+    () => rows.filter((row) => row.analyzeStatus === 'failed').length,
     [rows],
   );
 
@@ -41,7 +49,27 @@ export function useBatchPhaseNotifications(rows: BatchRow[], step: Step, isPrevi
     const prev = prevRecognitionActiveRef.current;
     prevRecognitionActiveRef.current = recognitionActiveCount;
     if (step === 3 && !isPreviewMode && phaseJustFinished(prev, recognitionActiveCount)) {
-      notifyDone(t('notify.recognitionDone'), t('notify.recognitionDoneBody').replace('{n}', String(rows.length)));
+      if (recognitionFailedCount > 0) {
+        notifyDone(
+          t('notify.recognitionFinished'),
+          t('notify.recognitionDoneBodyWithFailures')
+            .replace('{ready}', String(recognitionReadyCount))
+            .replace('{failed}', String(recognitionFailedCount)),
+        );
+        return;
+      }
+      notifyDone(
+        t('notify.recognitionDone'),
+        t('notify.recognitionDoneBody').replace('{n}', String(rows.length)),
+      );
     }
-  }, [recognitionActiveCount, step, isPreviewMode, rows.length, t]);
+  }, [
+    recognitionActiveCount,
+    recognitionFailedCount,
+    recognitionReadyCount,
+    step,
+    isPreviewMode,
+    rows.length,
+    t,
+  ]);
 }

@@ -25,7 +25,13 @@ import {
   policyReviewUrlForDataset,
   structuredJobStatusLabel,
 } from '../lib/dataset-utils';
-import { DatasetIdentity, EmptyState, ListPager } from './shared';
+import {
+  DatasetIdentity,
+  EmptyState,
+  ListPager,
+  STRUCTURED_DEFAULT_PAGE_SIZE,
+  STRUCTURED_LIST_PAGE_SIZE_OPTIONS,
+} from './shared';
 
 export function DeliveryDatasetCard({
   datasets,
@@ -45,7 +51,7 @@ export function DeliveryDatasetCard({
   const t = useT();
   const [query, setQuery] = React.useState('');
   const [page, setPage] = React.useState(0);
-  const pageSize = 5;
+  const [pageSize, setPageSize] = React.useState(STRUCTURED_DEFAULT_PAGE_SIZE);
   const deliverableDatasets = React.useMemo(() => datasets.filter(isDatasetDeliveryReady), [datasets]);
   const deliverableIds = React.useMemo(() => new Set(deliverableDatasets.map((dataset) => dataset.id)), [deliverableDatasets]);
   const deliverableCount = deliverableDatasets.length;
@@ -79,7 +85,7 @@ export function DeliveryDatasetCard({
 
   React.useEffect(() => {
     setPage(0);
-  }, [datasetListSignature, normalizedQuery]);
+  }, [datasetListSignature, normalizedQuery, pageSize]);
 
   return (
     <Card className="page-surface border-border/70 shadow-[var(--shadow-control)]">
@@ -181,7 +187,7 @@ export function DeliveryDatasetCard({
             })
           )}
         </div>
-        {orderedDatasets.length > pageSize ? (
+        {orderedDatasets.length > 0 ? (
           <ListPager
             label={t('structured.common.datasetsLabel')}
             page={safePage}
@@ -190,6 +196,8 @@ export function DeliveryDatasetCard({
             pageSize={pageSize}
             visibleCount={visibleDatasets.length}
             onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={STRUCTURED_LIST_PAGE_SIZE_OPTIONS}
           />
         ) : null}
       </CardContent>

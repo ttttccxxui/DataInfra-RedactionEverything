@@ -18,6 +18,8 @@ export type JobStatusFilterApi =
   | 'active'
   | 'awaiting_review'
   | 'completed'
+  | 'failed'
+  | 'cancelled'
   | 'risk'
   | 'draft';
 
@@ -79,7 +81,9 @@ export type JobSummary = {
   config: Record<string, unknown>;
   error_message?: string | null;
   created_at: string;
+  created_by?: string | null;
   updated_at: string;
+  updated_by?: string | null;
   progress: JobProgress;
 
   nav_hints?: {
@@ -290,7 +294,9 @@ export function normalizeJobSummary(rawJob: unknown): JobSummary {
     config: asRecord(job.config),
     error_message: asNullableString(job.error_message),
     created_at: createdAt,
+    created_by: asNullableString(job.created_by),
     updated_at: asString(job.updated_at, createdAt),
+    updated_by: asNullableString(job.updated_by),
     progress,
     nav_hints: normalizeNavHints(job, progress),
   };

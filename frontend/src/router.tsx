@@ -19,6 +19,9 @@ const Playground = React.lazy(() =>
 const StartPage = React.lazy(() =>
   import('./features/home').then((m) => ({ default: m.StartPage })),
 );
+const ProfileCenter = React.lazy(() =>
+  import('./features/profile').then((m) => ({ default: m.ProfileCenter })),
+);
 const Batch = React.lazy(() => import('./features/batch').then((m) => ({ default: m.Batch })));
 const BatchHub = React.lazy(() =>
   import('./features/batch').then((m) => ({ default: m.BatchHub })),
@@ -30,8 +33,11 @@ const Jobs = React.lazy(() => import('./features/jobs').then((m) => ({ default: 
 const JobDetailPage = React.lazy(() =>
   import('./features/jobs').then((m) => ({ default: m.JobDetailPage })),
 );
-const Structured = React.lazy(() =>
-  import('./features/structured/pages/overview').then((m) => ({ default: m.Structured })),
+const StructuredTasks = React.lazy(() =>
+  import('./features/structured').then((m) => ({ default: m.StructuredTasks })),
+);
+const StructuredTaskWizard = React.lazy(() =>
+  import('./features/structured').then((m) => ({ default: m.StructuredTaskWizard })),
 );
 const StructuredFiles = React.lazy(() =>
   import('./features/structured/pages/files').then((m) => ({ default: m.StructuredFiles })),
@@ -118,14 +124,21 @@ function AuthStatusErrorPage() {
 }
 
 const prefetchRoutes = () => {
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string };
+  }).connection;
+  if (
+    document.visibilityState !== 'visible' ||
+    connection?.saveData ||
+    connection?.effectiveType === '2g' ||
+    connection?.effectiveType === 'slow-2g'
+  ) {
+    return;
+  }
+
   const routes = [
-    () => import('./features/playground'),
     () => import('./features/home'),
-    () => import('./features/batch'),
-    () => import('./features/structured'),
-    () => import('./features/dicom'),
-    () => import('./features/history'),
-    () => import('./features/jobs'),
+    () => import('./features/profile'),
   ];
 
   void Promise.allSettled(routes.map((route) => route()));
@@ -137,9 +150,9 @@ if (typeof window !== 'undefined') {
       window as Window & {
         requestIdleCallback: (callback: () => void, options?: { timeout?: number }) => number;
       }
-    ).requestIdleCallback(prefetchRoutes, { timeout: 1200 });
+    ).requestIdleCallback(prefetchRoutes, { timeout: 8_000 });
   } else {
-    setTimeout(prefetchRoutes, Math.min(ROUTE_PREFETCH_DELAY_MS, 400));
+    setTimeout(prefetchRoutes, Math.max(ROUTE_PREFETCH_DELAY_MS, 8_000));
   }
 }
 
@@ -247,6 +260,14 @@ export const router = createBrowserRouter([
         ),
       },
       {
+        path: 'profile',
+        element: (
+          <LazyPage>
+            <ProfileCenter />
+          </LazyPage>
+        ),
+      },
+      {
         path: 'single',
         element: (
           <LazyPage>
@@ -275,7 +296,15 @@ export const router = createBrowserRouter([
         path: 'structured',
         element: (
           <LazyPage>
-            <Structured />
+            <StructuredTasks />
+          </LazyPage>
+        ),
+      },
+      {
+        path: 'structured/tasks/:taskId',
+        element: (
+          <LazyPage>
+            <StructuredTaskWizard />
           </LazyPage>
         ),
       },
@@ -349,6 +378,10 @@ export const router = createBrowserRouter([
       },
       {
         path: 'settings/system',
+        element: <Navigate to="/settings/system/users" replace />,
+      },
+      {
+        path: 'settings/system/:section',
         element: (
           <LazyPage>
             <SystemSettings />

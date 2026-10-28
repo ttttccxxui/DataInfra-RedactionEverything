@@ -223,11 +223,15 @@ async def execute_redaction(request: RedactionRequest) -> RedactionResult:
         if info is None:
             logger.warning("file %s was deleted during redaction, skipping store update", file_id)
         else:
+            actor = str(info.get("owner_id") or info.get("updated_by") or "local_user")
+            now = datetime.now(UTC).isoformat()
             info["output_path"] = result.get("output_path")
             info["entity_map"] = result.get("entity_map", {})
             info["redacted_count"] = int(result.get("redacted_count", 0))
             info["bounding_boxes"] = _group_boxes_by_page(request.bounding_boxes)
             info["entities"] = to_jsonable(request.entities)
+            info["updated_at"] = now
+            info["updated_by"] = actor
             # 版本历史追踪
             version_entry = {
                 "version": len(info.get("redaction_history", [])) + 1,
@@ -237,7 +241,8 @@ async def execute_redaction(request: RedactionRequest) -> RedactionResult:
                 "replacement_count": result["redacted_count"],
                 "entity_map": result.get("entity_map", {}),
                 "mode": request.config.replacement_mode.value if hasattr(request.config.replacement_mode, 'value') else str(request.config.replacement_mode),
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": now,
+                "created_by": actor,
             }
             if "redaction_history" not in info:
                 info["redaction_history"] = []
@@ -361,6 +366,7 @@ async def detect_vision(
     owner_id: str | None = None,
     signature_selected_ocr_has_types: list[str] | None = None,
     signature_selected_visual_feature_types: list[str] | None = None,
+    selected_regex_fallback_ids: list[str] | None = None,
 ) -> VisionResult:
     """
     Run dual-pipeline vision detection. Raises ValueError if file not found.
@@ -495,6 +501,8 @@ async def detect_vision(
         ocr_has_types=effective_ocr_types,
         visual_feature_types=effective_visual_feature_types,
         include_result_image=include_result_image,
+        owner_id=owner_id,
+        regex_fallback_ids=selected_regex_fallback_ids,
     )
     warnings = list(getattr(vision_service, "last_warnings", []) or [])
     pipeline_status = dict(getattr(vision_service, "last_pipeline_status", {}) or {})
@@ -550,6 +558,8 @@ async def detect_vision(
             if "vision_detection_signature" not in info or not isinstance(info.get("vision_detection_signature"), dict):
                 info["vision_detection_signature"] = {}
             info["vision_detection_signature"][page] = signature
+            info["updated_at"] = datetime.now(UTC).isoformat()
+            info["updated_by"] = str(owner_id or info.get("owner_id") or "local_user")
             file_store.set(file_id, info)
 
     logger.info(

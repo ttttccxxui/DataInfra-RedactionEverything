@@ -182,7 +182,7 @@ export function EntityTypeDialog({
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>类型</Label>
+            <Label>类别</Label>
             <div className="flex gap-2">
               <Button
                 type="button"

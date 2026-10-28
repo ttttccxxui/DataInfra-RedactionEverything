@@ -1,15 +1,31 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { useServiceHealth } from '@/hooks/use-service-health';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import type { BatchWizardMode } from '@/services/batchPipeline';
 
 import {
@@ -32,6 +48,59 @@ interface BatchStep3RecognizeProps {
 }
 
 type StatusFilter = 'all' | 'active' | 'ready' | 'failed' | 'pending';
+
+const STATUS_DEFAULT_PAGE_SIZE = 10;
+const STATUS_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+type PaginationItem = number | 'ellipsis';
+
+function formatFileSize(bytes: number | undefined): string {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  if (value < 1024) return `${Math.round(value)} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatFileType(fileType: unknown, filename?: string): string {
+  const raw = String(fileType ?? '').toLowerCase();
+  const name = String(filename ?? '').toLowerCase();
+  if (raw.includes('image') || /\.(jpe?g|png|webp|tiff?|bmp)$/i.test(name)) return 'image';
+  if (raw.includes('pdf') || name.endsWith('.pdf')) return 'pdf';
+  if (
+    raw.includes('docx') ||
+    raw.includes('doc') ||
+    raw.includes('word') ||
+    /\.(docx?|wps)$/i.test(name)
+  ) {
+    return 'docx';
+  }
+  if (raw.includes('txt') || raw.includes('text') || name.endsWith('.txt')) return 'txt';
+  return raw || '-';
+}
+
+function getPaginationItems(currentPage: number, totalPages: number): PaginationItem[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pages = new Set<number>([1, totalPages, currentPage, currentPage - 1, currentPage + 1]);
+  if (currentPage <= 2) pages.add(3);
+  if (currentPage >= totalPages - 1) pages.add(totalPages - 2);
+
+  const sortedPages = Array.from(pages)
+    .filter((pageNumber) => pageNumber >= 1 && pageNumber <= totalPages)
+    .sort((a, b) => a - b);
+
+  const items: PaginationItem[] = [];
+  sortedPages.forEach((pageNumber, index) => {
+    const previous = sortedPages[index - 1];
+    if (previous && pageNumber - previous > 1) {
+      items.push(pageNumber - previous === 2 ? previous + 1 : 'ellipsis');
+    }
+    items.push(pageNumber);
+  });
+  return items;
+}
 
 function BatchStep3RecognizeInner({
   mode = 'smart',
@@ -60,6 +129,8 @@ function BatchStep3RecognizeInner({
   const [submitting, setSubmitting] = useState(false);
   const [requeueing, setRequeueing] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [statusPage, setStatusPage] = useState(1);
+  const [statusPageSize, setStatusPageSize] = useState(STATUS_DEFAULT_PAGE_SIZE);
 
   const isProcessing =
     (everSubmitted || workingCount > 0) &&
@@ -84,6 +155,24 @@ function BatchStep3RecognizeInner({
     }
     return rows;
   }, [rows, statusFilter]);
+  const statusTotalPages = Math.max(1, Math.ceil(filteredRows.length / statusPageSize));
+  const safeStatusPage = Math.min(Math.max(1, statusPage), statusTotalPages);
+  const visibleRows = useMemo(
+    () => filteredRows.slice((safeStatusPage - 1) * statusPageSize, safeStatusPage * statusPageSize),
+    [filteredRows, safeStatusPage, statusPageSize],
+  );
+  const statusPaginationItems = useMemo(
+    () => getPaginationItems(safeStatusPage, statusTotalPages),
+    [safeStatusPage, statusTotalPages],
+  );
+
+  useEffect(() => {
+    setStatusPage(1);
+  }, [statusFilter, statusPageSize]);
+
+  useEffect(() => {
+    setStatusPage((current) => Math.min(Math.max(1, current), statusTotalPages));
+  }, [statusTotalPages]);
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -103,6 +192,10 @@ function BatchStep3RecognizeInner({
     } finally {
       setRequeueing(false);
     }
+  };
+  const handleStatusPageSizeChange = (pageSize: number) => {
+    setStatusPageSize(pageSize);
+    setStatusPage(1);
   };
 
   const progressLabel = allDone
@@ -182,10 +275,6 @@ function BatchStep3RecognizeInner({
       className="page-surface border-border/70 shadow-[var(--shadow-control)]"
       data-testid="batch-step3-recognize"
     >
-      <CardHeader className="shrink-0 border-b border-border/70 px-3 py-2">
-        <CardTitle className="text-sm">{t('batchWizard.step3.title')}</CardTitle>
-        <p className="truncate text-xs text-muted-foreground">{t('batchWizard.step3.desc')}</p>
-      </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2.5 xl:overflow-hidden">
         {/* Progress */}
         {rows.length > 0 && (
@@ -244,6 +333,7 @@ function BatchStep3RecognizeInner({
             onClick={() => goStep(2)}
             data-testid="step3-prev"
           >
+            <ChevronLeft className="size-4" />
             {t('batchWizard.step3.prevStep')}
           </Button>
 
@@ -290,8 +380,9 @@ function BatchStep3RecognizeInner({
             data-reviewable-count={doneCount}
           >
             {canReview
-              ? `${t('batchWizard.step3.nextReview')} \u2192`
+              ? t('batchWizard.step3.nextReview')
               : `${t('batchWizard.step3.nextReview')} (${doneCount}/${rows.length})`}
+            <ChevronRight className="size-4" />
           </Button>
         </div>
 
@@ -315,55 +406,148 @@ function BatchStep3RecognizeInner({
         </div>
 
         {/* Per-file status list */}
-        <div className="min-h-0 flex-1 divide-y overflow-y-auto rounded-lg border">
-          {filteredRows.length === 0 ? (
-            <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-              {t('batchWizard.step3.noRowsInFilter')}
-            </div>
-          ) : (
-            filteredRows.map((r) => {
-              const detail = rowProgressLabel(r);
-              return (
-                <div
-                  key={r.file_id}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 px-3 py-2 text-sm md:grid-cols-[minmax(0,1.2fr)_minmax(0,13rem)_auto_minmax(0,12rem)] md:py-1.5"
-                  data-testid={`recognition-row-${r.file_id}`}
-                >
-                  <span className="min-w-0 truncate" title={r.original_filename}>
-                    {r.original_filename}
-                  </span>
-                  <span
-                    className="col-span-2 min-w-0 truncate text-xs text-muted-foreground md:col-auto"
-                    title={detail ?? undefined}
-                    data-testid={`row-progress-${r.file_id}`}
-                  >
-                    {detail ?? ''}
-                  </span>
-                  <Badge
-                    variant={
-                      r.analyzeStatus === 'completed'
-                        ? 'default'
-                        : r.analyzeStatus === 'failed'
-                          ? 'destructive'
-                          : RECOGNITION_DONE_STATUSES.has(r.analyzeStatus)
-                            ? 'secondary'
-                            : 'outline'
-                    }
-                    className="col-start-2 row-start-1 shrink-0 whitespace-nowrap text-xs md:col-auto md:row-auto"
-                  >
-                    {statusLabel(r.analyzeStatus)}
-                  </Badge>
-                  <span
-                    className="col-span-2 min-w-0 truncate text-xs text-destructive md:col-auto"
-                    title={r.analyzeError}
-                  >
-                    {r.analyzeError ?? ''}
-                  </span>
-                </div>
-              );
-            })
-          )}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <Table className="min-w-[52rem]">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-14 text-center">序号</TableHead>
+                <TableHead className="min-w-48 text-left">文件名</TableHead>
+                <TableHead className="w-24 text-center">文件大小</TableHead>
+                <TableHead className="w-24 text-center">文件类型</TableHead>
+                <TableHead className="w-24 text-center">状态</TableHead>
+                <TableHead className="min-w-40 text-left">处理进度</TableHead>
+                <TableHead className="min-w-36 text-left">异常信息</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                    {t('batchWizard.step3.noRowsInFilter')}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                visibleRows.map((r, index) => {
+                  const detail = rowProgressLabel(r);
+                  return (
+                    <TableRow key={r.file_id} data-testid={`recognition-row-${r.file_id}`}>
+                      <TableCell className="text-center text-muted-foreground">
+                        {(safeStatusPage - 1) * statusPageSize + index + 1}
+                      </TableCell>
+                      <TableCell className="text-left font-medium text-foreground">
+                        <span className="block max-w-[22rem] truncate" title={r.original_filename}>
+                          {r.original_filename}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-center text-foreground">
+                        {formatFileSize(r.file_size)}
+                      </TableCell>
+                      <TableCell className="text-center text-foreground">
+                        {formatFileType(r.file_type, r.original_filename)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge
+                          variant={
+                            r.analyzeStatus === 'completed'
+                              ? 'default'
+                              : r.analyzeStatus === 'failed'
+                                ? 'destructive'
+                                : RECOGNITION_DONE_STATUSES.has(r.analyzeStatus)
+                                  ? 'secondary'
+                                  : 'outline'
+                          }
+                          className="whitespace-nowrap text-xs"
+                        >
+                          {statusLabel(r.analyzeStatus)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-left text-muted-foreground">
+                        <span
+                          className="block max-w-[16rem] truncate"
+                          title={detail ?? undefined}
+                          data-testid={`row-progress-${r.file_id}`}
+                        >
+                          {detail ?? '-'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-left text-destructive">
+                        <span className="block max-w-[14rem] truncate" title={r.analyzeError}>
+                          {r.analyzeError ?? ''}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
         </div>
+        {filteredRows.length > 0 && (
+          <div className="flex flex-col gap-3 border-t border-border/70 px-3 py-2 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>共 {filteredRows.length} 条</span>
+            <div className="flex items-center justify-end gap-2">
+              <Select
+                value={String(statusPageSize)}
+                onValueChange={(value) => handleStatusPageSizeChange(Number(value))}
+              >
+                <SelectTrigger className="h-8 w-28" data-testid="step3-status-page-size">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size} 条/页
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-3"
+                onClick={() => setStatusPage((current) => Math.max(1, current - 1))}
+                disabled={safeStatusPage <= 1}
+                data-testid="step3-status-prev"
+              >
+                上一页
+              </Button>
+              {statusPaginationItems.map((item, index) =>
+                item === 'ellipsis' ? (
+                  <span
+                    key={`step3-status-ellipsis-${index}`}
+                    className="flex h-8 min-w-8 items-center justify-center rounded-md border border-border bg-card px-2 text-foreground"
+                  >
+                    ...
+                  </span>
+                ) : (
+                  <Button
+                    key={item}
+                    variant={item === safeStatusPage ? 'default' : 'outline'}
+                    size="sm"
+                    className="h-8 min-w-8 px-2"
+                    onClick={() => setStatusPage(item)}
+                    aria-current={item === safeStatusPage ? 'page' : undefined}
+                    data-testid={`step3-status-page-${item}`}
+                  >
+                    {item}
+                  </Button>
+                ),
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-3"
+                onClick={() =>
+                  setStatusPage((current) => Math.min(statusTotalPages, current + 1))
+                }
+                disabled={safeStatusPage >= statusTotalPages}
+                data-testid="step3-status-next"
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

@@ -24,7 +24,6 @@ import type {
   StructuredConnectionPayload,
   StructuredDataset,
 } from '@/services/structuredApi';
-import { DATABASE_DISCOVERY_PAGE_SIZE } from '../lib/constants';
 import {
   connectionTargetLabel,
   datasetKey,
@@ -32,7 +31,27 @@ import {
   datasetTypeLabel,
   shapeKindLabel,
 } from '../lib/dataset-utils';
-import { EmptyState, Field, ListPager } from './shared';
+import {
+  EmptyState,
+  Field,
+  STRUCTURED_DEFAULT_PAGE_SIZE,
+} from './shared';
+
+type DatabasePaginationItem = number | 'ellipsis';
+const DATABASE_OBJECT_PAGE_SIZE_OPTIONS = [STRUCTURED_DEFAULT_PAGE_SIZE] as const;
+
+function getDatabasePaginationItems(currentPage: number, totalPages: number): DatabasePaginationItem[] {
+  if (totalPages <= 5) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+  if (currentPage <= 3) {
+    return [1, 2, 3, 'ellipsis', totalPages];
+  }
+  if (currentPage >= totalPages - 2) {
+    return [1, 'ellipsis', totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, 'ellipsis', currentPage, 'ellipsis', totalPages];
+}
 
 export function DatabaseConnectionCard({
   payload,
@@ -329,6 +348,7 @@ export function DiscoveredTablesCard({
   const [query, setQuery] = React.useState('');
   const [schemaFilter, setSchemaFilter] = React.useState('__all__');
   const [page, setPage] = React.useState(0);
+  const [pageSize, setPageSize] = React.useState(STRUCTURED_DEFAULT_PAGE_SIZE);
   const discoverySignature = React.useMemo(() => datasets.map(datasetKey).join('|'), [datasets]);
   const sortedDatasets = React.useMemo(
     () =>
@@ -374,10 +394,13 @@ export function DiscoveredTablesCard({
           .some((value) => String(value).toLowerCase().includes(normalizedQuery)),
       )
     : schemaFilteredDatasets;
-  const pageSize = DATABASE_DISCOVERY_PAGE_SIZE;
   const pageCount = Math.max(1, Math.ceil(filteredDatasets.length / pageSize));
   const safePage = Math.min(page, pageCount - 1);
   const visibleDatasets = filteredDatasets.slice(safePage * pageSize, safePage * pageSize + pageSize);
+  const paginationItems = React.useMemo(
+    () => getDatabasePaginationItems(safePage + 1, pageCount),
+    [safePage, pageCount],
+  );
   const selectedInFilter = filteredDatasets.filter((dataset) => selected.has(datasetKey(dataset))).length;
   const schemaSummaryMap = React.useMemo(
     () => new Map(schemaSummaries.map((schema) => [schema.label, schema])),
@@ -399,7 +422,7 @@ export function DiscoveredTablesCard({
 
   React.useEffect(() => {
     setPage(0);
-  }, [datasets.length, normalizedQuery, schemaFilter]);
+  }, [datasets.length, normalizedQuery, pageSize, schemaFilter]);
 
   React.useEffect(() => {
     setQuery('');
@@ -544,7 +567,7 @@ export function DiscoveredTablesCard({
             </div>
           ) : null}
         </div>
-        <div className="overflow-hidden rounded-xl border border-border" data-testid="db-discovery-list">
+        <div className="overflow-x-auto" data-testid="db-discovery-list">
           {datasets.length === 0 ? (
             <EmptyState
               icon={Database}
@@ -559,28 +582,28 @@ export function DiscoveredTablesCard({
           ) : filteredDatasets.length === 0 ? (
             <EmptyState icon={Database} text={t('structured.database.emptyFiltered')} />
           ) : (
-            <table className="w-full table-fixed text-xs">
-              <thead className="bg-muted text-xs text-muted-foreground">
-                <tr>
-                  <th className="w-10 px-2 py-1.5 text-left">
+            <table className="w-full min-w-[52rem] table-fixed border-t border-border/70 text-xs">
+              <thead className="bg-[var(--background-secondary)] text-xs text-muted-foreground">
+                <tr className="border-b border-border/70">
+                  <th className="w-10 px-2 py-2 text-center">
                     {isRegisteredMode ? t('structured.database.th.status') : t('structured.database.th.select')}
                   </th>
-                  <th className="w-[18%] px-2 py-1.5 text-left">Schema</th>
-                  <th className="w-[28%] px-2 py-1.5 text-left">{t('structured.database.tablesViews')}</th>
-                  <th className="w-[12%] px-2 py-1.5 text-left">{t('structured.database.th.type')}</th>
-                  <th className="w-[18%] px-2 py-1.5 text-left">{t('structured.database.th.scale')}</th>
-                  <th className="w-[14%] px-2 py-1.5 text-left">{t('structured.database.th.source')}</th>
-                  {isRegisteredMode ? (
-                    <th className="w-[10%] px-2 py-1.5 text-right">{t('structured.database.th.actions')}</th>
-                  ) : null}
+                  <th className="w-[20%] px-2 py-2 text-left">Schema</th>
+                  <th className="w-[31%] px-2 py-2 text-left">{t('structured.database.tablesViews')}</th>
+                  <th className="w-[12%] px-2 py-2 text-center">{t('structured.database.th.type')}</th>
+                  <th className="w-[19%] px-2 py-2 text-left">{t('structured.database.th.scale')}</th>
+                  <th className="w-[16%] px-2 py-2 text-center">{t('structured.database.th.source')}</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleGroups.map((group) => (
                   <React.Fragment key={group.label}>
                     {showSchemaGroupHeaders ? (
-                      <tr className="border-t border-border bg-muted/25" data-testid="db-schema-group-header">
-                        <td colSpan={isRegisteredMode ? 7 : 6} className="px-2 py-0.5">
+                      <tr
+                        className="border-b border-border/70 bg-[var(--background-secondary)]"
+                        data-testid="db-schema-group-header"
+                      >
+	                        <td colSpan={6} className="px-2 py-1">
                           <span className="flex min-w-0 items-center justify-between gap-3 text-[11px] text-muted-foreground">
                             <span className="flex min-w-0 items-center gap-2 font-medium text-foreground">
                               <Layers className="size-3.5 shrink-0 text-muted-foreground" />
@@ -607,20 +630,24 @@ export function DiscoveredTablesCard({
                           ? t('structured.common.rowsPending')
                           : t('structured.common.rowCount').replace('{count}', String(dataset.row_count_estimate));
                       return (
-                        <tr key={key} className="border-t border-border" data-testid="db-discovery-row">
-                          <td className="px-2 py-1">
+                        <tr
+                          key={key}
+                          className="border-b border-border/70 transition-colors hover:bg-[var(--background-secondary)]"
+                          data-testid="db-discovery-row"
+                        >
+                          <td className="px-2 py-2 text-center">
                             {isRegisteredMode ? (
-                              <CheckCircle2 className="size-4 text-[var(--success-foreground)]" />
+                              <CheckCircle2 className="mx-auto size-4 text-[var(--success-foreground)]" />
                             ) : (
                               <Checkbox checked={selected.has(key)} onCheckedChange={() => onToggle(key)} />
                             )}
                           </td>
-                          <td className="px-2 py-1">
+                          <td className="px-2 py-2">
                             <span className="block truncate" title={datasetSchemaLabel(dataset)}>
                               {datasetSchemaLabel(dataset)}
                             </span>
                           </td>
-                          <td className="px-2 py-1">
+                          <td className="px-2 py-2">
                             <span className="block truncate font-medium" title={dataset.name}>
                               {dataset.table_name ?? dataset.name}
                             </span>
@@ -628,31 +655,22 @@ export function DiscoveredTablesCard({
                               {shapeKindLabel(dataset.shape_kind)}
                             </span>
                           </td>
-                          <td className="px-2 py-1">
+                          <td className="px-2 py-2 text-center">
                             <Badge variant="outline">
                               {datasetTypeLabel(dataset)}
                             </Badge>
                           </td>
-                          <td className="px-2 py-1 text-muted-foreground">
+                          <td className="px-2 py-2 text-muted-foreground">
                             <span className="block truncate">
                               {t('structured.common.columnCount').replace('{count}', String(dataset.column_count))}
                             </span>
                             <span className="block truncate text-[10px]">{rowsText}</span>
                           </td>
-                          <td className="px-2 py-1">
+                          <td className="px-2 py-2 text-center">
                             <Badge variant="outline">
                               {dataset.source_kind.toUpperCase()}
                             </Badge>
                           </td>
-                          {isRegisteredMode ? (
-                            <td className="px-2 py-1 text-right">
-                              <Button asChild variant="outline" size="sm" className="h-8 px-2">
-                                <Link to={`/structured/datasets?datasetId=${encodeURIComponent(dataset.id)}`}>
-                                  {t('structured.common.goToPolicy')}
-                                </Link>
-                              </Button>
-                            </td>
-                          ) : null}
                         </tr>
                       );
                     })}
@@ -662,17 +680,68 @@ export function DiscoveredTablesCard({
             </table>
           )}
         </div>
-        {filteredDatasets.length > pageSize ? (
-          <div className="mt-1.5">
-            <ListPager
-              label={t('structured.database.tablesViews')}
-              page={safePage}
-              pageCount={pageCount}
-              total={filteredDatasets.length}
-              pageSize={pageSize}
-              visibleCount={visibleDatasets.length}
-              onPageChange={setPage}
-            />
+        {filteredDatasets.length > 0 ? (
+          <div className="flex flex-col gap-3 border-t border-border/70 px-4 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>共 {filteredDatasets.length} 条</span>
+            <div className="flex items-center justify-end gap-2">
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  setPageSize(Number(value));
+                  setPage(0);
+                }}
+              >
+                <SelectTrigger className="h-8 w-28">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DATABASE_OBJECT_PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size} 条/页
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-3"
+                onClick={() => setPage((current) => Math.max(0, current - 1))}
+                disabled={safePage <= 0}
+              >
+                上一页
+              </Button>
+              {paginationItems.map((item, index) =>
+                item === 'ellipsis' ? (
+                  <span
+                    key={`ellipsis-${index}`}
+                    className="flex h-8 min-w-8 items-center justify-center rounded-md border border-border bg-card px-2 text-foreground"
+                  >
+                    ...
+                  </span>
+                ) : (
+                  <Button
+                    key={item}
+                    variant={item === safePage + 1 ? 'default' : 'outline'}
+                    size="sm"
+                    className="h-8 min-w-8 px-2"
+                    onClick={() => setPage(item - 1)}
+                    aria-current={item === safePage + 1 ? 'page' : undefined}
+                  >
+                    {item}
+                  </Button>
+                ),
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-3"
+                onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+                disabled={safePage >= pageCount - 1}
+              >
+                下一页
+              </Button>
+            </div>
           </div>
         ) : null}
       </CardContent>

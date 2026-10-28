@@ -3,8 +3,8 @@
 
 import React from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { PaginationRail } from '@/components/PaginationRail';
 import { cn } from '@/lib/utils';
 import { useT } from '@/i18n';
 import type { StructuredDataset } from '@/services/structuredApi';
@@ -14,6 +14,9 @@ import {
   shortEntityId,
   type DatasetIdentityContext,
 } from '../lib/dataset-utils';
+
+export const STRUCTURED_DEFAULT_PAGE_SIZE = 10;
+export const STRUCTURED_LIST_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
 
 export function DatasetIdentity({
   dataset,
@@ -106,6 +109,8 @@ export function ListPager({
   pageSize,
   visibleCount,
   onPageChange,
+  onPageSizeChange,
+  pageSizeOptions,
 }: {
   label: string;
   page: number;
@@ -114,43 +119,23 @@ export function ListPager({
   pageSize: number;
   visibleCount: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
+  pageSizeOptions?: readonly number[];
 }) {
   const t = useT();
-  const start = total === 0 ? 0 : page * pageSize + 1;
-  const end = total === 0 ? 0 : Math.min(total, page * pageSize + visibleCount);
+  const rangeLabel = t('structured.common.pagerRange').replace('{label}', label);
   return (
-    <div className="flex min-h-8 flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-2.5 py-1.5 text-xs text-muted-foreground">
-      <span className="min-w-0 truncate">
-        {t('structured.common.pagerSummary')
-          .replace('{label}', label)
-          .replace('{start}', String(start))
-          .replace('{end}', String(end))
-          .replace('{total}', String(total))
-          .replace('{page}', String(page + 1))
-          .replace('{pageCount}', String(pageCount))}
-      </span>
-      {pageCount > 1 ? (
-        <span className="ml-auto flex gap-1.5">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            disabled={page <= 0}
-            onClick={() => onPageChange(page - 1)}
-          >
-            {t('structured.common.prevGroup')}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            disabled={page >= pageCount - 1}
-            onClick={() => onPageChange(page + 1)}
-          >
-            {t('structured.common.nextGroup')}
-          </Button>
-        </span>
-      ) : null}
-    </div>
+    <PaginationRail
+      page={page + 1}
+      pageSize={pageSize}
+      totalItems={total}
+      totalPages={pageCount}
+      onPageChange={(nextPage) => onPageChange(Math.max(0, nextPage - 1))}
+      onPageSizeChange={onPageSizeChange}
+      pageSizeOptions={pageSizeOptions}
+      rangeLabel={rangeLabel}
+      compact
+      reserveWhenEmpty={visibleCount === 0}
+    />
   );
 }

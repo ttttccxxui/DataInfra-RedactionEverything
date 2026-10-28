@@ -34,8 +34,13 @@ export type StructuredDataset = {
   schema: Array<Record<string, unknown>>;
   metadata: Record<string, unknown>;
   created_at: string;
+  created_by?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
   profile_updated_at?: string | null;
+  profile_updated_by?: string | null;
   policy_updated_at?: string | null;
+  policy_updated_by?: string | null;
   policy_reviewed_at?: string | null;
 };
 
@@ -47,6 +52,9 @@ export type StructuredSource = {
   status: string;
   metadata: Record<string, unknown>;
   created_at: string;
+  created_by?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
 };
 
 export type StructuredConnection = {
@@ -57,7 +65,9 @@ export type StructuredConnection = {
   last_tested_at?: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
+  created_by?: string | null;
   updated_at: string;
+  updated_by?: string | null;
 };
 
 export type StructuredColumnProfile = {
@@ -85,6 +95,8 @@ export type StructuredProfile = {
     duration_ms?: number;
     matched_columns?: number;
   };
+  updated_at?: string | null;
+  updated_by?: string | null;
 };
 
 export type StructuredColumnPolicy = {
@@ -151,14 +163,24 @@ export function previewStructuredDataset(datasetId: string): Promise<StructuredP
 
 export function getStructuredPolicy(
   datasetId: string,
-): Promise<{ dataset_id: string; columns: StructuredColumnPolicy[]; updated_at?: string | null }> {
+): Promise<{
+  dataset_id: string;
+  columns: StructuredColumnPolicy[];
+  updated_at?: string | null;
+  updated_by?: string | null;
+}> {
   return get(`/structured/datasets/${datasetId}/policy`);
 }
 
 export function saveStructuredPolicy(
   datasetId: string,
   columns: StructuredColumnPolicy[],
-): Promise<{ dataset_id: string; columns: StructuredColumnPolicy[]; updated_at?: string | null }> {
+): Promise<{
+  dataset_id: string;
+  columns: StructuredColumnPolicy[];
+  updated_at?: string | null;
+  updated_by?: string | null;
+}> {
   return put(`/structured/datasets/${datasetId}/policy`, { columns });
 }
 

@@ -21,11 +21,11 @@ export function Layout() {
     >
       <OfflineBanner />
       <AppSidebar />
-      <SidebarInset className="h-dvh overflow-hidden lg:h-[calc(100dvh-1rem)]">
+      <SidebarInset className="h-dvh min-h-0 min-w-0 overflow-hidden lg:h-[calc(100dvh-1rem)]">
         <AppHeader />
         <main
           key={location.pathname}
-          className="flex min-h-0 flex-1 flex-col overflow-hidden animate-fade-in"
+          className="app-content-scroll flex min-h-0 min-w-0 flex-1 flex-col animate-fade-in"
         >
           <Outlet />
         </main>

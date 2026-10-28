@@ -115,7 +115,9 @@ class JobResponse(BaseModel):
     config_json: str | None = None
     error_message: str | None = None
     created_at: str
+    created_by: str | None = None
     updated_at: str
+    updated_by: str | None = None
     progress: JobProgress = Field(default_factory=JobProgress)
     nav_hints: NavHints | None = None
 
@@ -833,4 +835,3 @@ class BatchDetailsBody(BaseModel):
 class BatchDetailsResponse(BaseModel):
     """Response for POST /jobs/batch-details."""
     jobs: list[JobDetailResponse] = Field(default_factory=list)
-

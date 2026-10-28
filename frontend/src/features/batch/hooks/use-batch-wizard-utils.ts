@@ -134,6 +134,8 @@ export function buildJobConfigForWorker(
     image_redaction_strength: c.imageRedactionStrength,
     image_fill_color: c.imageFillColor,
     watermark_text: (c.watermarkText || '').trim() || undefined,
+    preset_text_id: c.presetTextId || undefined,
+    preset_vision_id: c.presetVisionId || undefined,
     batch_wizard_mode: wizardMode,
     preferred_execution: c.executionDefault === 'local' ? 'local' : 'queue',
     wizard_furthest_step: wizardFurthestStep,
@@ -178,6 +180,10 @@ export function mergeJobConfigIntoWizardCfg(
       typeof jc.image_fill_color === 'string' ? jc.image_fill_color : c.imageFillColor,
     watermarkText:
       typeof jc.watermark_text === 'string' ? jc.watermark_text : c.watermarkText,
+    presetTextId:
+      typeof jc.preset_text_id === 'string' ? jc.preset_text_id : c.presetTextId,
+    presetVisionId:
+      typeof jc.preset_vision_id === 'string' ? jc.preset_vision_id : c.presetVisionId,
   };
 }
 

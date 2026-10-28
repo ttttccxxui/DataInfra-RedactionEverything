@@ -1,14 +1,22 @@
 // Copyright 2026 DataInfra-RedactionEverything Contributors
 
 import { memo, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, FileJson, RefreshCw, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, Download, FileJson, RefreshCw, ShieldCheck } from 'lucide-react';
 
 import { useT } from '@/i18n';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
-import { getRedactionStateLabel, resolveRedactionState } from '@/utils/redactionState';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { SettingsListPagination } from '@/features/settings/components/settings-list-pagination';
 import { getJobExportReport } from '@/services/jobsApi';
 import {
   batchExportApi,
@@ -32,6 +40,8 @@ type DeliveryGroup = 'ready' | 'review' | 'redact' | 'retry';
 
 // 与后端 EXPORT_SYNC_MAX_FILES 对齐：超过走异步分卷导出
 const ASYNC_EXPORT_FILE_THRESHOLD = 200;
+const EXPORT_DEFAULT_PAGE_SIZE = 10;
+const EXPORT_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
 
 function formatBytesHuman(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -43,6 +53,52 @@ function formatBytesHuman(bytes: number): string {
     unit += 1;
   }
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatFileType(fileType: unknown, filename?: string): string {
+  const raw = String(fileType ?? '').toLowerCase();
+  const name = String(filename ?? '').toLowerCase();
+  if (raw.includes('image') || /\.(jpe?g|png|webp|tiff?|bmp)$/i.test(name)) return 'image';
+  if (raw.includes('pdf') || name.endsWith('.pdf')) return 'pdf';
+  if (raw.includes('docx') || raw.includes('doc') || raw.includes('word') || /\.(docx?|wps)$/i.test(name)) {
+    return 'docx';
+  }
+  if (raw.includes('txt') || raw.includes('text') || name.endsWith('.txt')) return 'txt';
+  return raw || '-';
+}
+
+function statusLabel(t: (key: string) => string, status: BatchRow['analyzeStatus']) {
+  switch (status) {
+    case 'pending':
+      return t('batchWizard.status.pending');
+    case 'parsing':
+      return t('batchWizard.status.parsing');
+    case 'analyzing':
+      return t('batchWizard.status.analyzing');
+    case 'awaiting_review':
+      return t('batchWizard.status.awaitingReview');
+    case 'review_approved':
+      return t('batchWizard.status.reviewApproved');
+    case 'redacting':
+      return t('batchWizard.status.redacting');
+    case 'completed':
+      return t('batchWizard.status.completed');
+    case 'failed':
+      return t('batchWizard.status.failed');
+    default:
+      return status;
+  }
+}
+
+function rowProgressPercent(row: BatchRow): number {
+  if (row.analyzeStatus === 'completed') return 100;
+  if (row.analyzeStatus === 'failed') return 100;
+  const current = Number(row.recognitionCurrent ?? 0);
+  const total = Number(row.recognitionTotal ?? 0);
+  if (total > 0) {
+    return Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+  }
+  return 0;
 }
 
 const DELIVERY_GROUP_ORDER: DeliveryGroup[] = ['ready', 'review', 'redact', 'retry'];
@@ -112,6 +168,8 @@ function BatchStep5ExportInner({
   const [serverReportLoading, setServerReportLoading] = useState(false);
   const [serverReportFailed, setServerReportFailed] = useState(false);
   const [reportReloadNonce, setReportReloadNonce] = useState(0);
+  const [filePage, setFilePage] = useState(1);
+  const [filePageSize, setFilePageSize] = useState(EXPORT_DEFAULT_PAGE_SIZE);
   const localReport = useMemo(() => buildBatchExportReport(rows, selectedIds), [rows, selectedIds]);
   const report = serverReport ?? localReport;
   const deliveryStatus =
@@ -147,6 +205,12 @@ function BatchStep5ExportInner({
     return groups;
   }, [reportFilesById, selectedRows]);
   const selectedKey = selectedIds.join('\u0000');
+  const fileTotalPages = Math.max(1, Math.ceil(rows.length / filePageSize));
+  const safeFilePage = Math.min(Math.max(1, filePage), fileTotalPages);
+  const visibleRows = useMemo(
+    () => rows.slice((safeFilePage - 1) * filePageSize, safeFilePage * filePageSize),
+    [filePageSize, rows, safeFilePage],
+  );
   const requiresServerReport = Boolean(activeJobId && selectedIds.length > 0);
   const authoritativeReportReady = !requiresServerReport || Boolean(serverReport);
   const authoritativeReportUnavailable = requiresServerReport && serverReportFailed;
@@ -227,6 +291,10 @@ function BatchStep5ExportInner({
   };
 
   useEffect(() => {
+    setFilePage((current) => Math.min(Math.max(1, current), fileTotalPages));
+  }, [fileTotalPages]);
+
+  useEffect(() => {
     if (!activeJobId || selectedIds.length === 0) {
       setServerReport(null);
       setServerReportLoading(false);
@@ -294,10 +362,6 @@ function BatchStep5ExportInner({
       className="page-surface border-border/70 shadow-[var(--shadow-control)]"
       data-testid="batch-step5-export"
     >
-      <CardHeader className="shrink-0 border-b border-border/70 px-3 py-2">
-        <CardTitle className="text-sm">{t('batchWizard.step5.title')}</CardTitle>
-        <p className="truncate text-xs text-muted-foreground">{t('batchWizard.step5.desc')}</p>
-      </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3 xl:overflow-hidden">
         {authoritativeReportUnavailable && (
           <div
@@ -329,6 +393,7 @@ function BatchStep5ExportInner({
             onClick={() => handleResolveIssue(firstIssueFileId)}
             data-testid="step5-back-review"
           >
+            <ChevronLeft className="size-4" />
             {t('batchWizard.step5.backReview')}
           </Button>
           <Button
@@ -512,43 +577,103 @@ function BatchStep5ExportInner({
           </div>
         )}
 
-        <div
-          className="min-h-0 flex-1 divide-y overflow-y-auto rounded-lg border"
-          role="list"
-          aria-label={t('batchWizard.step5.exportFileSelection')}
-        >
-          {rows.map((r) => {
-            const rs = resolveRedactionState(r.has_output, r.analyzeStatus);
-            return (
-              <div
-                key={r.file_id}
-                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1.5 text-sm"
-                role="listitem"
-              >
-                <Checkbox
-                  checked={selected.has(r.file_id)}
-                  aria-label={t('batchWizard.step5.selectFile').replace(
-                    '{name}',
-                    r.original_filename,
-                  )}
-                  onCheckedChange={() => toggle(r.file_id)}
-                  data-testid={`export-check-${r.file_id}`}
-                />
-                <span className="min-w-0 truncate" title={r.original_filename}>
-                  {r.original_filename}
-                </span>
-                <Badge
-                  variant={
-                    rs === 'redacted' ? 'default' : rs === 'unredacted' ? 'outline' : 'secondary'
-                  }
-                  className="shrink-0 whitespace-nowrap text-xs"
-                >
-                  {getRedactionStateLabel(rs)}
-                </Badge>
-              </div>
-            );
-          })}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <Table className="min-w-[64rem]">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12 px-4 text-center" />
+                <TableHead className="w-16 whitespace-nowrap px-4 text-center">序号</TableHead>
+                <TableHead className="min-w-56 px-4 text-left">文件名</TableHead>
+                <TableHead className="w-28 whitespace-nowrap px-4 text-center">文件大小</TableHead>
+                <TableHead className="w-28 whitespace-nowrap px-4 text-center">文件类型</TableHead>
+                <TableHead className="w-28 whitespace-nowrap px-4 text-center">状态</TableHead>
+                <TableHead className="w-40 whitespace-nowrap px-4 text-center">处理进度</TableHead>
+                <TableHead className="min-w-56 px-4 text-left">异常信息</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                    {t('batchWizard.step2.noFiles')}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                visibleRows.map((r, index) => {
+                  const progress = rowProgressPercent(r);
+                  const errorText = r.analyzeError?.trim() || '-';
+                  return (
+                    <TableRow key={r.file_id}>
+                      <TableCell className="px-4 text-center">
+                        <Checkbox
+                          checked={selected.has(r.file_id)}
+                          aria-label={t('batchWizard.step5.selectFile').replace(
+                            '{name}',
+                            r.original_filename,
+                          )}
+                          onCheckedChange={() => toggle(r.file_id)}
+                          data-testid={`export-check-${r.file_id}`}
+                        />
+                      </TableCell>
+                      <TableCell className="px-4 text-center font-medium text-muted-foreground tabular-nums">
+                        {(safeFilePage - 1) * filePageSize + index + 1}
+                      </TableCell>
+                      <TableCell className="px-4 text-left font-semibold text-foreground">
+                        <span className="block max-w-[24rem] truncate" title={r.original_filename}>
+                          {r.original_filename}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 text-center text-foreground">
+                        {formatBytesHuman(r.file_size)}
+                      </TableCell>
+                      <TableCell className="px-4 text-center text-foreground">
+                        {formatFileType(r.file_type, r.original_filename)}
+                      </TableCell>
+                      <TableCell className="px-4 text-center">
+                        <Badge
+                          variant={r.analyzeStatus === 'failed' ? 'destructive' : 'secondary'}
+                          className="whitespace-nowrap text-xs"
+                        >
+                          {statusLabel(t, r.analyzeStatus)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="px-4 text-center text-foreground">
+                        <div className="mx-auto flex max-w-36 items-center justify-center gap-2">
+                          <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
+                            <span
+                              className="block h-full rounded-full bg-primary"
+                              style={{ width: `${progress}%` }}
+                            />
+                          </span>
+                          <span className="min-w-9 text-left text-xs tabular-nums">{progress}%</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 text-left text-foreground">
+                        <span className="block max-w-[18rem] truncate" title={errorText}>
+                          {errorText}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
         </div>
+        {rows.length > 0 && (
+          <SettingsListPagination
+            page={safeFilePage}
+            pageSize={filePageSize}
+            total={rows.length}
+            pageSizeOptions={EXPORT_PAGE_SIZE_OPTIONS}
+            onPageChange={setFilePage}
+            onPageSizeChange={(pageSize) => {
+              setFilePageSize(pageSize);
+              setFilePage(1);
+            }}
+            testIdPrefix="step5-files"
+          />
+        )}
       </CardContent>
     </Card>
   );

@@ -38,6 +38,9 @@ class FileListItem(BaseModel):
     file_size: int
     file_type: FileType
     created_at: str | None = None
+    created_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
     has_output: bool = False
     entity_count: int = 0
     upload_source: Literal["playground", "batch"] = Field(

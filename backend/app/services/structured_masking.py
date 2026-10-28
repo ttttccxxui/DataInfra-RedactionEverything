@@ -1,17 +1,24 @@
-"""Preview and value-level masking/redaction for structured datasets."""
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
+import time
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 from typing import Any
 
 from app.core.config import settings
+from app.core.degrade_policy import degrade_ok
+from app.models.errors import NotFoundError
+from app.services import whitelist_service
 from app.services.structured_common import MAX_PREVIEW_ROWS, compact_text, normalize_value
 from app.services.structured_files import load_dataset_rows
-from app.services.structured_profile import get_or_create_policy
+from app.services.structured_profile import get_or_create_policy, registered_schema_table
 from app.services.structured_store import StructuredStore, get_structured_store
+
+logger = logging.getLogger(__name__)
 
 
 def preview_dataset(
@@ -24,10 +31,24 @@ def preview_dataset(
     store = store or get_structured_store()
     dataset = store.get_dataset(dataset_id, owner_id=owner_id)
     if not dataset:
-        raise ValueError("dataset not found")
-    table = load_dataset_rows(dataset, owner_id=owner_id, limit=min(MAX_PREVIEW_ROWS, max(1, limit)), store=store)
+        raise NotFoundError("dataset not found")
+    try:
+        table = load_dataset_rows(dataset, owner_id=owner_id, limit=min(MAX_PREVIEW_ROWS, max(1, limit)), store=store)
+    except Exception as exc:
+        if not dataset.get("connection_id"):
+            raise
+        table = registered_schema_table(dataset)
+        if not table.columns:
+            raise
+        logger.warning(
+            "Structured dataset %s source unavailable; previewing registered schema only: %s",
+            dataset_id,
+            exc,
+        )
     policy = get_or_create_policy(dataset_id, owner_id=owner_id, store=store)
     policy_columns = list(policy.get("columns") or [])
+    from app.services.structured_profile import validate_policy_columns
+    validate_policy_columns({"columns": [{"name": name} for name in table.columns]}, policy_columns)
     return {
         "dataset_id": dataset_id,
         "columns": table.columns,
@@ -37,16 +58,57 @@ def preview_dataset(
     }
 
 
+_WHITELIST_TTL_SEC = 5.0
+_whitelist_cache: dict[str, tuple[float, list[dict], tuple]] = {}
+
+
+def _whitelist_entries(owner_id: str) -> list[dict]:
+    now = time.monotonic()
+    try:
+        token = whitelist_service.cache_token(owner_id)
+    except OSError:
+        # Force a load on unreadable configuration; never reuse stale exemptions.
+        token = None
+    cached = _whitelist_cache.get(owner_id)
+    if cached is not None and token is not None and cached[2] == token and now - cached[0] < _WHITELIST_TTL_SEC:
+        return cached[1]
+    try:
+        entries = whitelist_service.list_entries(owner_id)
+    except Exception:
+        logger.warning("whitelist unavailable for structured redaction; skipping exemption", exc_info=True)
+        entries = degrade_ok(
+            [],
+            what="招标 5.3 白名单豁免（指定内容不脱敏）",
+            channel="结构化库表",
+            reason="白名单读取失败，本次按无豁免处理（宁可多脱敏）",
+            detail={"owner_id": owner_id},
+            user=str(owner_id),
+        )
+    _whitelist_cache[owner_id] = (now, entries, token)
+    return entries
+
+
+def _cell_is_whitelisted(value: Any, entity_type: str, entries: list[dict]) -> bool:
+    text = normalize_value(value)
+    if not text:
+        return False
+    return whitelist_service._is_exempt(SimpleNamespace(text=text, type=entity_type), None, entries)
+
+
 def redact_row(row: dict[str, Any], policy_columns: list[dict[str, Any]], *, owner_id: str, dataset_id: str) -> dict[str, Any]:
     by_column = {str(item.get("column")): item for item in policy_columns if item.get("enabled", True)}
     out = dict(row)
+    entries = _whitelist_entries(owner_id)
     for column, policy in by_column.items():
         if column not in out:
+            continue
+        entity_type = str(policy.get("entity_type") or "CUSTOM")
+        if entries and _cell_is_whitelisted(out[column], entity_type, entries):
             continue
         out[column] = redact_value(
             out[column],
             action=str(policy.get("action") or "keep"),
-            entity_type=str(policy.get("entity_type") or "CUSTOM"),
+            entity_type=entity_type,
             salt=f"{owner_id}:{dataset_id}:{column}",
             params=policy.get("params") if isinstance(policy.get("params"), dict) else {},
         )

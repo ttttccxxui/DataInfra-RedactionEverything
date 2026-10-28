@@ -151,7 +151,7 @@ async def create_job(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    audit_log("create", "job", result["id"])
+    audit_log("create", "job", result["id"], user=owner_id)
     return result
 
 
@@ -202,7 +202,7 @@ async def update_job_draft(
     patch = body.model_dump(exclude_unset=True)
     try:
         _jms.assert_job_owner(store.get_job(job_id), owner_id)
-        return _jms.update_draft(store, job_id, patch)
+        return _jms.update_draft(store, job_id, patch, updated_by=owner_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ConflictError as exc:
@@ -312,7 +312,7 @@ async def submit_job(
 ) -> dict[str, Any]:
     try:
         _jms.assert_job_owner(store.get_job(job_id), owner_id)
-        return _jms.submit_job(store, job_id)
+        return _jms.submit_job(store, job_id, updated_by=owner_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -327,7 +327,7 @@ async def cancel_job(
 ) -> dict[str, Any]:
     try:
         _jms.assert_job_owner(store.get_job(job_id), owner_id)
-        return _jms.cancel_job(store, job_id)
+        return _jms.cancel_job(store, job_id, updated_by=owner_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -341,14 +341,14 @@ async def requeue_failed_items(
     """将该 Job 下所有 FAILED 的 item 重新设为 QUEUED，由 Worker 重新处理。"""
     try:
         _jms.assert_job_owner(store.get_job(job_id), owner_id)
-        result = _jms.requeue_failed(store, job_id)
+        result = _jms.requeue_failed(store, job_id, updated_by=owner_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    audit_log("requeue_failed", "job", job_id)
+    audit_log("requeue_failed", "job", job_id, user=owner_id)
     return result
 
 

@@ -490,11 +490,21 @@ export function useBatchReview(
   );
   const totalReviewBoxCount = reviewBoxes.length;
   const reviewImagePreviewSrc = useMemo(() => {
-    if (!reviewImagePreview) return '';
+    if (!reviewImagePreview) {
+      if (reviewFile?.isImageMode === true && selectedReviewBoxCount === 0) {
+        return reviewOrigImageBlobUrl;
+      }
+      return '';
+    }
     return reviewImagePreview.startsWith('data:')
       ? reviewImagePreview
       : `data:image/png;base64,${reviewImagePreview}`;
-  }, [reviewImagePreview]);
+  }, [
+    reviewFile?.isImageMode,
+    reviewImagePreview,
+    reviewOrigImageBlobUrl,
+    selectedReviewBoxCount,
+  ]);
 
   const reviewData = useBatchReviewData({
     step,

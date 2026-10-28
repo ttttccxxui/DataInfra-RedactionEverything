@@ -15,6 +15,14 @@ import {
 export interface EntityTypeConfig {
   id: string;
   name: string;
+  created_at?: string | null;
+  created_by?: string | null;
+  createdAt?: string | null;
+  createdBy?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
   data_domain?: string;
   generic_target?: string | null;
   entity_type_ids?: string[];
@@ -46,6 +54,14 @@ export interface TextTaxonomyDomain {
 export interface PipelineTypeConfig {
   id: string;
   name: string;
+  created_at?: string | null;
+  created_by?: string | null;
+  createdAt?: string | null;
+  createdBy?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
   data_domain?: string;
   generic_target?: string | null;
   entity_type_ids?: string[];
@@ -194,17 +210,17 @@ export function useEntityTypes() {
   const regexTypes = useMemo(
     () =>
       entityTypes.filter(
-        (t) => t.enabled !== false && t.id.startsWith('custom_') && t.regex_pattern,
+        (t) => t.enabled !== false && Boolean(t.regex_pattern?.trim()),
       ),
     [entityTypes],
   );
-  // Text rules list: LLM (semantic) types plus custom regex-fallback types (use_llm=false).
+  // Text rules list: semantic types plus every regex fallback type.
   const textRuleTypes = useMemo(
     () =>
       entityTypes.filter(
         (t) =>
           t.enabled !== false &&
-          (t.use_llm || (t.id.startsWith('custom_') && Boolean(t.regex_pattern))),
+          (t.use_llm || Boolean(t.regex_pattern?.trim())),
       ),
     [entityTypes],
   );
